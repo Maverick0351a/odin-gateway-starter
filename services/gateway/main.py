@@ -107,6 +107,11 @@ def jwks():
 def healthz():
     return {"status": "ok", "kid": GATEWAY_KID, "receipts": store.health()}
 
+# Convenience alias some platforms expect /health
+@app.get("/health")
+def health_alias():
+    return healthz()
+
 @app.get("/metrics")
 def metrics():
     return Response(generate_latest(_REGISTRY), media_type=CONTENT_TYPE_LATEST)

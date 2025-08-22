@@ -1,5 +1,9 @@
 # ODIN Agent Starter (v2)
 
+[![CI](https://github.com/Maverick0351a/odin-gateway-starter/actions/workflows/ci.yml/badge.svg)](https://github.com/Maverick0351a/odin-gateway-starter/actions/workflows/ci.yml)
+
+License: MIT
+
 This repo contains:
 - Gateway + Relay FastAPI services
 - Shared ODIN Core package (crypto/JWKS, CID, SFT, HEL, receipts, Firestore/JSONL)
@@ -93,7 +97,11 @@ Prereqs: gcloud auth login, set project.
 ```
 Outputs gateway & dashboard URLs plus smoke checks.
 
-## Tests
+## Tests / CI
 ```powershell
 python -m pytest -q
 ```
+
+GitHub Actions runs these on pushes & PRs (see badge above). Python 3.11 & 3.12 matrix.
+
+Health endpoint: `/healthz` (alias `/health`).
