@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/Maverick0351a/odin-gateway-starter/actions/workflows/ci.yml/badge.svg)](https://github.com/Maverick0351a/odin-gateway-starter/actions/workflows/ci.yml)
 
-License: MIT
+License: Apache-2.0 (see `LICENSE`)
 
 This repo contains:
 - Gateway + Relay FastAPI services
