@@ -11,7 +11,8 @@ class ReceiptStore:
         # Project resolution order: explicit arg > FIRESTORE_PROJECT_ID > GOOGLE_CLOUD_PROJECT
         self.project_id = project_id or os.getenv("FIRESTORE_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT")
         self.collection_name = collection or os.getenv("FIRESTORE_COLLECTION", "receipts")
-        self._local_path = pathlib.Path(os.getenv("ODIN_LOCAL_RECEIPTS", "/mnt/data/odin_receipts.jsonl"))
+        # Use repo/workdir-local fallback instead of /mnt (which may require root in CI runners)
+        self._local_path = pathlib.Path(os.getenv("ODIN_LOCAL_RECEIPTS", "odin_receipts.jsonl"))
         self._client = None
         self._healthy = False
         self._last_error: Optional[str] = None
