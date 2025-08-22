@@ -1,0 +1,148 @@
+from typing import Tuple, Dict, Any
+import json
+
+class SFTError(Exception):
+    pass
+
+# Simple registry for semantic format transformations
+# key: (from_type, to_type) -> transformer(payload) -> (new_payload, notes)
+_REGISTRY: Dict[tuple[str, str], callable] = {}
+
+def sft(from_type: str, to_type: str):
+    def decorator(fn):
+        _REGISTRY[(from_type, to_type)] = fn
+        return fn
+    return decorator
+
+# ---------------------------
+# Common helper used by all mappers
+# ---------------------------
+def _map_invoice_to_iso20022(args: Dict[str, Any], created_at: str | None) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    mapped = {
+        "Document": {
+            "FIToFICstmrCdtTrf": {
+                "GrpHdr": {
+                    "MsgId": args.get("invoice_id"),
+                    "CreDtTm": created_at,
+                },
+                "CdtTrfTxInf": [{
+                    "Amt": {"InstdAmt": {"ccy": args.get("currency", "USD"), "value": args.get("amount")}},
+                    "Cdtr": {"Nm": args.get("customer_name")},
+                    "RmtInf": {"Ustrd": [args.get("description", "")]},
+                }],
+            }
+        }
+    }
+    notes = {"fields_mapped": ["invoice_id->MsgId", "amount->InstdAmt", "customer_name->Cdtr.Nm"]}
+    return mapped, notes
+
+# ---------------------------
+# 1) Vendor → ISO20022
+# ---------------------------
+@sft("invoice.vendor.v1", "invoice.iso20022.v1")
+def _vendor_to_iso20022(payload: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    return _map_invoice_to_iso20022(payload, payload.get("created_at"))
+
+# ---------------------------
+# 2) OpenAI tool-use → ISO20022
+#    Expects OpenAI-style tool_calls with arguments as JSON string.
+# ---------------------------
+@sft("openai.tooluse.invoice.v1", "invoice.iso20022.v1")
+def _openai_tooluse_invoice_to_iso20022(payload: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    try:
+        tool_calls = payload.get("tool_calls", [])
+        if not tool_calls:
+            raise SFTError("No tool_calls found")
+
+        # Assume first tool_call is the invoice function
+        func = tool_calls[0].get("function", {})
+        args_json = func.get("arguments")
+        if isinstance(args_json, str):
+            args = json.loads(args_json)
+        elif isinstance(args_json, dict):
+            args = args_json
+        else:
+            raise SFTError("Function arguments missing")
+
+        return _map_invoice_to_iso20022(args, payload.get("created_at"))
+    except Exception as e:
+        raise SFTError(f"Failed to map openai.tooluse.invoice.v1: {e}")
+
+# ---------------------------
+# 3) Claude tool-use → ISO20022
+#    Supports both string and dict arguments for parity.
+# ---------------------------
+@sft("claude.tooluse.invoice.v1", "invoice.iso20022.v1")
+def _claude_tooluse_invoice_to_iso20022(payload: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    try:
+        # Newer shape: tool_calls (parity with OpenAI)
+        tool_calls = payload.get("tool_calls", [])
+        args = None
+        if tool_calls:
+            call = tool_calls[0]
+            func = call.get("function", {}) or call
+            args_json = func.get("arguments")
+            if isinstance(args_json, str):
+                args = json.loads(args_json)
+            elif isinstance(args_json, dict):
+                args = args_json
+        # Legacy Anthropic shape: content list with tool_use entries
+        if args is None:
+            for item in payload.get("content", []):
+                if item.get("type") == "tool_use":
+                    tool_input = item.get("input")
+                    if isinstance(tool_input, dict):
+                        args = tool_input
+                        break
+        if args is None:
+            raise SFTError("No tool_use arguments found")
+        return _map_invoice_to_iso20022(args, payload.get("created_at"))
+    except Exception as e:
+        raise SFTError(f"Failed to map claude.tooluse.invoice.v1: {e}")
+
+def transform_payload(payload: Dict[str, Any], payload_type: str, target_type: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    if payload_type == target_type:
+        return payload, {"notes": "already_normalized"}
+    key = (payload_type, target_type)
+    if key not in _REGISTRY:
+        raise SFTError(f"No SFT transformer registered for {payload_type} -> {target_type}")
+    return _REGISTRY[key](payload)
+
+# ---------------------------
+# 4) ISO20022 → OpenAI tool-use (reverse mapping for audit / round-trip demo)
+# ---------------------------
+@sft("invoice.iso20022.v1", "openai.tooluse.invoice.v1")
+def _iso20022_back_to_openai(payload: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    try:
+        doc = payload.get("Document", {})
+        main = doc.get("FIToFICstmrCdtTrf", {})
+        grp = main.get("GrpHdr", {})
+        txs = main.get("CdtTrfTxInf", [])
+        if not txs:
+            raise SFTError("Missing CdtTrfTxInf array")
+        first = txs[0]
+        amt = first.get("Amt", {}).get("InstdAmt", {})
+        creditor = first.get("Cdtr", {})
+        rmt = first.get("RmtInf", {}).get("Ustrd", [])
+        args = {
+            "invoice_id": grp.get("MsgId"),
+            "amount": amt.get("value"),
+            "currency": amt.get("ccy"),
+            "customer_name": creditor.get("Nm"),
+            "description": rmt[0] if rmt else None,
+        }
+        created_at = grp.get("CreDtTm")
+        tool_payload = {
+            "tool_calls": [{
+                "type": "function",
+                "function": {
+                    "name": "create_invoice",
+                    "arguments": json.dumps({k: v for k, v in args.items() if v is not None})
+                }
+            }],
+            "created_at": created_at,
+        }
+        notes = {"fields_mapped": ["MsgId->invoice_id", "InstdAmt->amount", "Cdtr.Nm->customer_name"], "reverse": True}
+        return tool_payload, notes
+    except Exception as e:
+        raise SFTError(f"Failed to map invoice.iso20022.v1 -> openai.tooluse.invoice.v1: {e}")

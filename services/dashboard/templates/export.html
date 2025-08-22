@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Export: {{ trace_id }}</h2>
+
+{% set ok = status.chain_ok and status.cid_match and status.sig_ok %}
+<div class="banner {{ 'banner-success' if ok else 'banner-fail' }}">
+  <strong>Verify bundle:</strong>
+  {% if ok %}
+    ✅ Verified (chain, CID, signature)
+  {% else %}
+    ❌ Verification failed
+    <ul>
+      {% if not status.chain_ok %}<li>Chain linkage or receipt hashes invalid</li>{% endif %}
+      {% if not status.cid_match %}<li>Response CID header does not match computed CID</li>{% endif %}
+      {% if not status.sig_ok %}<li>Signature did not verify against JWKS</li>{% endif %}
+    </ul>
+  {% endif %}
+</div>
+
+<div class="card">
+  <div class="row">
+    <div><strong>Computed CID:</strong> <code id="cid-computed">{{ resp_cid_computed }}</code></div>
+  </div>
+  <div class="row">
+    <div><strong>X-ODIN-Response-CID:</strong>
+      {% if resp_cid_header %}
+        <code id="cid-header">{{ resp_cid_header }}</code>
+        <button class="btn" onclick="copyText('cid-header')">Copy header CID</button>
+      {% else %}
+        <em>(header missing)</em>
+      {% endif %}
+    </div>
+  </div>
+  <div class="row">
+    <div><strong>Signature KID:</strong> {{ kid or '(unknown)' }}</div>
+    <div><strong>Variant:</strong> {{ status.sig_variant or '(n/a)' }}</div>
+  </div>
+</div>
+
+<h3>Bundle JSON</h3>
+<pre class="code">{{ bundle | tojson(indent=2) }}</pre>
+
+<script>
+function copyText(id) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const txt = el.textContent || el.innerText;
+  navigator.clipboard.writeText(txt).then(() => {
+    const btns = document.getElementsByClassName('btn');
+    if (btns && btns[0]) {
+      const old = btns[0].innerText;
+      btns[0].innerText = 'Copied!';
+      setTimeout(()=>{ btns[0].innerText = old; }, 1200);
+    }
+  });
+}
+</script>
+{% endblock %}

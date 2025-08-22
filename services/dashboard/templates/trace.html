@@ -1,0 +1,23 @@
+{% extends 'base.html' %}
+{% block content %}
+<h2>Trace {{ trace_id }}</h2>
+<p>Gateway: {{ gateway_url }}</p>
+<p>Status: {% if all_ok %}<span class="ok">Chain OK</span>{% else %}<span class="fail">Issues Detected</span>{% endif %}</p>
+<table>
+  <thead>
+    <tr><th>Hop</th><th>Receipt Hash</th><th>Hash</th><th>Link</th><th>Prev</th></tr>
+  </thead>
+  <tbody>
+    {% for row in chain %}
+    <tr>
+      <td>{{ row.hop.hop_index }}</td>
+      <td class="mono">{{ row.hop.receipt_hash }}</td>
+      <td>{% if row.hash_ok %}✅{% else %}❌{% endif %}</td>
+      <td>{% if row.link_ok %}✅{% else %}❌{% endif %}</td>
+      <td class="mono">{{ row.hop.prev_receipt_hash or '-' }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+<p><a href="/export/{{ trace_id }}?gateway_url={{ gateway_url | urlencode }}">View Export Bundle</a></p>
+{% endblock %}

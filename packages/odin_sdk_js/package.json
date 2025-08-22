@@ -1,0 +1,24 @@
+{
+  "name": "odin-sdk-js",
+  "version": "0.1.0",
+  "description": "ODIN Node/TypeScript SDK (OPE sign/send/verify, receipts, exports)",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": { "odin": "bin/odin.js" },
+  "scripts": {
+    "build": "tsc -p .",
+    "lint": "echo 'no lint configured'",
+    "test": "node --test",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "cross-fetch": "^4.0.0",
+    "tweetnacl": "^1.0.3"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "@types/node": "^20.11.30"
+  },
+  "license": "MIT"
+}

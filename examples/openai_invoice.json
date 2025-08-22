@@ -1,0 +1,12 @@
+{
+  "tool_calls": [
+    {
+      "type": "function",
+      "function": {
+        "name": "create_invoice",
+        "arguments": "{\"invoice_id\":\"INV-OAI-1\",\"amount\":321.5,\"currency\":\"USD\",\"customer_name\":\"OpenAI Co\",\"description\":\"Tool use\"}"
+      }
+    }
+  ],
+  "created_at": "2025-08-22T00:00:00+00:00"
+}

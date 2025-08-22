@@ -1,0 +1,16 @@
+{% extends 'base.html' %}
+{% block content %}
+<section class="card">
+  <h2>Trace Lookup</h2>
+  <form method="get" action="/trace/{{ trace_id or '' }}" onsubmit="event.preventDefault(); window.location='/trace/' + document.getElementById('trace_id').value + '?gateway_url=' + encodeURIComponent(document.getElementById('gateway_url').value);">
+    <label>Gateway URL
+      <input type="text" id="gateway_url" name="gateway_url" value="{{ gateway_url }}" />
+    </label>
+    <label>Trace ID
+      <input type="text" id="trace_id" name="trace_id" value="{{ trace_id }}" placeholder="trace-id" />
+    </label>
+    <button type="submit">View Chain</button>
+  </form>
+  <p>Or directly view export: after entering trace id, append /export/{trace_id}.</p>
+</section>
+{% endblock %}

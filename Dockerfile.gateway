@@ -1,0 +1,14 @@
+FROM python:3.11-slim
+WORKDIR /app
+ENV PYTHONDONTWRITEBYTECODE=1 \
+	PYTHONUNBUFFERED=1 \
+	PIP_NO_CACHE_DIR=1
+# Install deps first for better layer caching
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+# Copy only needed source (avoid copying tests, examples, etc.)
+COPY packages ./packages
+COPY services ./services
+ENV PYTHONPATH=/app:/app/packages
+EXPOSE 8080
+CMD ["uvicorn", "services.gateway.main:app", "--host", "0.0.0.0", "--port", "8080"]

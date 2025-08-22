@@ -1,0 +1,25 @@
+﻿# Python
+.venv/
+__pycache__/
+*.pyc
+dist/
+build/
+*.egg-info/
+
+# Node
+node_modules/
+packages/odin_sdk_js/dist/
+
+# OS/IDE
+.DS_Store
+.vscode/
+.idea/
+
+# Secrets / artifacts
+.env
+*.key
+*.pem
+*.p12
+*.json  # (dont commit SA keys)
+gw.env.yaml
+dash.env.yaml
