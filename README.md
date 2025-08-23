@@ -6,7 +6,7 @@
 [![License](https://img.shields.io/badge/license-Apache--2.0-lightgrey)](LICENSE)
 [![Cloud Run](https://img.shields.io/badge/deploy-Google%20Cloud%20Run-orange)](https://cloud.run/)
 [![PyPI](https://img.shields.io/pypi/v/odin-sdk.svg)](https://pypi.org/project/odin-sdk/) [![PyPI - Python Version](https://img.shields.io/pypi/pyversions/odin-sdk.svg)](https://pypi.org/project/odin-sdk/) [![PyPI - Downloads](https://img.shields.io/pypi/dm/odin-sdk.svg?label=downloads)](https://pypi.org/project/odin-sdk/)
-[![npm](https://img.shields.io/badge/npm-coming--soon-lightgrey)](#)
+[![npm](https://img.shields.io/npm/v/odin-sdk-js/next.svg?label=npm@next)](https://www.npmjs.com/package/odin-sdk-js) [![npm (latest)](https://img.shields.io/npm/v/odin-sdk-js.svg?label=npm@latest)](https://www.npmjs.com/package/odin-sdk-js) [![npm downloads](https://img.shields.io/npm/dm/odin-sdk-js.svg)](https://www.npmjs.com/package/odin-sdk-js)
 
 > Production‑ready starter for governed, verifiable AI→AI communication using the **ODIN OPE (Open Proof Envelope)** protocol.
 
