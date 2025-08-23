@@ -547,6 +547,8 @@ python -m pytest -q
 
 GitHub Actions runs these on pushes & PRs (see badge above). Python 3.11 & 3.12 matrix. Separate workflow `npm-publish.yml` handles JS package publishing (manual dispatch or tag `js-v*`).
 
+Coverage: Combined multi-version coverage uploaded via Codecov (targets 70% project, 70% patch; non-blocking initially). Increase thresholds as critical paths gain tests.
+
 * Run tests: `pytest -q`
 * End-to-end verify test (`tests/test_verify.py`) now uses an in-process ASGI gateway (`asgi://gateway` sentinel) avoiding network port binding for CI stability.
 

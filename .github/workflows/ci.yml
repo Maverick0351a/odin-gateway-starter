@@ -57,6 +57,43 @@ jobs:
         with:
             name: coverage-${{ matrix.python-version }}
             path: coverage.xml
+      - name: Upload raw coverage data
+        uses: actions/upload-artifact@v4
+        with:
+            name: coverage-data-${{ matrix.python-version }}
+            path: .coverage*
+
+  coverage-aggregate:
+    name: Coverage Aggregate & Upload
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download coverage artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: cov_artifacts
+      - name: Combine coverage
+        run: |
+          python -m pip install --upgrade pip
+          pip install coverage
+          ls -R cov_artifacts
+          find cov_artifacts -name '.coverage*' -exec cp {} . \;
+          coverage combine || true
+          # If combine failed (e.g., only one file), still ensure XML exists
+          coverage xml -o combined-coverage.xml || cp cov_artifacts/**/coverage.xml combined-coverage.xml
+          coverage report || true
+      - name: Upload combined coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-combined
+          path: combined-coverage.xml
+      - name: Upload to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: combined-coverage.xml
+          flags: python
+          fail_ci_if_error: false
+          verbose: true
       - name: Lint (ruff)
         run: ruff check . --output-format=github
       - name: Type check (mypy)
