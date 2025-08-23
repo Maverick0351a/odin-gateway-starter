@@ -4,12 +4,12 @@ import os
 import pathlib
 import random
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Callable
 
-try:
-    from google.cloud import firestore
-except Exception:
-    firestore = None
+try:  # runtime import; types optionally ignored via mypy config section
+    from google.cloud import firestore  # type: ignore
+except Exception:  # pragma: no cover - import guard
+    firestore = None  # type: ignore
 logger = logging.getLogger("odin.firestore")
 
 class ReceiptStore:
@@ -50,6 +50,8 @@ class ReceiptStore:
         # Firestore TTL: If FIRESTORE_TTL_DAYS set, users should configure a TTL policy on field 'created_at'.
         # We record the config for health visibility but do not enforce deletes client-side (let Firestore TTL do it).
         self._firestore_ttl_days = _get_int("FIRESTORE_TTL_DAYS", 0)
+        # Local hop counters to preserve monotonic hop numbering even if earlier receipts are pruned.
+        self._hop_counters: Dict[str, int] = {}
 
     # ---------------- Retention (local mode) ----------------
     def _prune_local(self):
@@ -86,7 +88,20 @@ class ReceiptStore:
                 ts_raw = doc.get('ts') or doc.get('created_at')
                 if not ts_raw:
                     continue
-                dt = datetime.datetime.fromisoformat(ts_raw)
+                # Normalize common formats; accept trailing 'Z'
+                if ts_raw.endswith('Z'):
+                    ts_norm = ts_raw[:-1] + '+00:00'
+                else:
+                    ts_norm = ts_raw
+                try:
+                    dt = datetime.datetime.fromisoformat(ts_norm)
+                except Exception:
+                    # Fallback: attempt parsing without microseconds or timezone
+                    try:
+                        dt = datetime.datetime.strptime(ts_raw.split('.')[0], '%Y-%m-%dT%H:%M:%S')
+                        dt = dt.replace(tzinfo=datetime.timezone.utc)
+                    except Exception:
+                        continue
                 if dt.tzinfo is None:
                     dt = dt.replace(tzinfo=datetime.timezone.utc)
                 if dt.timestamp() >= cutoff:
@@ -103,7 +118,7 @@ class ReceiptStore:
         self._local_path.parent.mkdir(parents=True, exist_ok=True)
         with self._local_path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(doc) + "\n")
-    def _retry(self, fn, attempts=3, base_delay=0.2):
+    def _retry(self, fn: Callable[[], Any], attempts: int = 3, base_delay: float = 0.2) -> Any:
         for i in range(attempts):
             try:
                 return fn()
@@ -115,40 +130,48 @@ class ReceiptStore:
 
     def add_receipt(self, receipt: Dict[str, Any]) -> int:
         """Add a receipt to Firestore or local store, returning assigned hop index."""
-        trace_id = receipt.get("trace_id")
+        trace_id_any: Any = receipt.get("trace_id")
+        if not isinstance(trace_id_any, str) or not trace_id_any:
+            raise ValueError("receipt.trace_id must be a non-empty string")
+        trace_id: str = trace_id_any
         if self._client:
             return self._add_firestore(trace_id, receipt)
         return self._add_local(trace_id, receipt)
 
     # --- Firestore helpers ---
     def _add_firestore(self, trace_id: str, receipt: Dict[str, Any]) -> int:
-        coll = self._client.collection(self.collection_name).document(trace_id).collection("hops")  # type: ignore
-        base_ref = self._client.collection(self.collection_name).document(trace_id)  # type: ignore
+        if firestore is None:
+            raise RuntimeError("Firestore library not available")
+        if self._client is None:
+            raise RuntimeError("Firestore client not initialized")
+        client = self._client  # treat as firestore.Client
+        coll = client.collection(self.collection_name).document(trace_id).collection("hops")
+        base_ref = client.collection(self.collection_name).document(trace_id)
         try:
-            @firestore.transactional  # type: ignore
-            def _tx(transaction, base_ref_inner):  # type: ignore
+            @firestore.transactional
+            def _tx(transaction, base_ref_inner):
                 snap = base_ref_inner.get(transaction=transaction)
                 meta = snap.to_dict() if snap.exists else {}
                 current = int(meta.get("count", 0))
                 meta["count"] = current + 1
                 transaction.set(base_ref_inner, meta)
                 return current
-            transaction = self._client.transaction()  # type: ignore
+            transaction = client.transaction()
             hop = self._retry(lambda: _tx(transaction, base_ref))
             receipt["hop"] = hop
-            self._retry(lambda: coll.document(f"{hop}").set(receipt))  # type: ignore
+            self._retry(lambda: coll.document(f"{hop}").set(receipt))
             self._last_write_ts = receipt.get("ts") or receipt.get("created_at")
             return hop
         except Exception as e:  # pragma: no cover - rare fallback
             logger.warning(f"Firestore hop transaction failed, fallback to query method: {e}")
             try:
-                snap = coll.stream()  # type: ignore
+                snap = coll.stream()
                 hop = sum(1 for _ in snap)
             except Exception:
                 hop = 0
             receipt["hop"] = hop
             try:
-                coll.document(f"{hop}").set(receipt)  # type: ignore
+                coll.document(f"{hop}").set(receipt)
                 self._last_write_ts = receipt.get("ts") or receipt.get("created_at")
             except Exception as ee:
                 self._last_error = str(ee)
@@ -156,32 +179,43 @@ class ReceiptStore:
 
     # --- Local helpers ---
     def _add_local(self, trace_id: str, receipt: Dict[str, Any]) -> int:
-        self._prune_local()  # prune first for accurate hop assignment when lines capped
+        # Prune first so aged / excess lines are removed before determining hop.
+        # Hop numbering remains monotonic via _hop_counters.
+        self._prune_local()
         hop = self._next_local_hop(trace_id)
         receipt["hop"] = hop
         self._write_local(receipt)
         self._last_write_ts = receipt.get("ts") or receipt.get("created_at")
-        self._prune_local()  # enforce final caps
+        # Apply pruning after writing.
+        self._prune_local()
         return hop
 
     def _next_local_hop(self, trace_id: str) -> int:
-        if not self._local_path.exists():
-            return 0
-        hop = 0
-        try:
-            with self._local_path.open('r', encoding='utf-8') as f:
-                for line in f:
-                    try:
-                        doc = json.loads(line)
-                    except Exception:
-                        continue
-                    if doc.get('trace_id') == trace_id:
-                        h = doc.get('hop')
-                        if isinstance(h, int) and h >= hop:
-                            hop = h + 1
-        except Exception:
-            hop = 0
-        return hop
+        # Fast path: if we've already assigned hops for this trace_id, advance counter.
+        if trace_id in self._hop_counters:
+            nxt = self._hop_counters[trace_id]
+            self._hop_counters[trace_id] = nxt + 1
+            return nxt
+        # Initial scan: determine max existing hop (if any) for this trace.
+        max_hop = -1
+        if self._local_path.exists():
+            try:
+                with self._local_path.open('r', encoding='utf-8') as f:
+                    for line in f:
+                        try:
+                            doc = json.loads(line)
+                        except Exception:
+                            continue
+                        if doc.get('trace_id') == trace_id:
+                            h = doc.get('hop')
+                            if isinstance(h, int) and h > max_hop:
+                                max_hop = h
+            except Exception:
+                max_hop = -1
+        # Next hop is max_hop + 1 (starts at 0 if none found)
+        nxt = max_hop + 1
+        self._hop_counters[trace_id] = nxt + 1  # store next assignment value
+        return nxt
     def get_chain(self, trace_id: str) -> List[Dict[str, Any]]:
         results: List[Dict[str, Any]] = []
         if self._client:
