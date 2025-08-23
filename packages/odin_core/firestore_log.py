@@ -4,14 +4,15 @@ import os
 import pathlib
 import random
 import time
-from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
 if TYPE_CHECKING:  # for type checkers only; optional dependency
     from google.cloud import firestore  # pragma: no cover
 
-# Runtime optional import
+# Third-party (optional) import kept in a try/except so ruff/isort can't fold it
+# into the top block; this is acceptable for optional deps.
 try:  # optional dependency; may be absent in minimal env
-    from google.cloud import firestore as _firestore
+    from google.cloud import firestore as _firestore  # pragma: no cover
 except Exception:  # pragma: no cover
     _firestore = None
 firestore = _firestore  # runtime alias (may be None)
