@@ -6,7 +6,7 @@ import os
 import pathlib
 import sys
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 from fastapi import FastAPI, HTTPException, Response
@@ -40,11 +40,12 @@ def _is_private_ip(ip: str) -> bool:
     except Exception:
         return True
 
-async def _resolve_block_private(host: str):
+async def _resolve_block_private(host: str) -> None:
     try:
-        infos = await asyncio.get_event_loop().getaddrinfo(host, None)
-        for family, _, _, _, sockaddr in infos:
-            ip = sockaddr[0]
+            loop = asyncio.get_event_loop()
+            infos: List[Tuple[int, int, int, str, Tuple[str, int]]] = await loop.getaddrinfo(host, None)  # type: ignore[assignment]
+            for family, _stype, _proto, _canon, sockaddr in infos:
+                ip = sockaddr[0]  # type: ignore[index]
             if _is_private_ip(ip):
                 raise HTTPException(403, detail=f"SSRF defense: private/reserved IP blocked for host {host}")
     except HTTPException:

@@ -1,5 +1,6 @@
 from odin_core.transparency import TransparencyLog
 
+
 def test_transparency_merkle_root_progression():
     tl = TransparencyLog()
     assert tl.root() is None

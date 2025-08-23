@@ -1,8 +1,14 @@
 # Demo: craft and send a signed OPE envelope to the local gateway
-import os, json, base64, requests, hashlib
+import base64
+import hashlib
+import json
+import os
 from datetime import datetime, timezone
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+import requests
 from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
 
 def b64u(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b'=').decode('ascii')

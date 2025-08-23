@@ -1,6 +1,5 @@
-import os, tempfile, json
-from odin_core.transparency import TransparencyLog
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from odin_core.transparency import TransparencyLog
 
 
 def test_transparency_persistence_and_checkpoint(tmp_path):

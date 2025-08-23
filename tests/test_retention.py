@@ -1,5 +1,9 @@
-import os, json, time, pathlib
+import json
+import os
+import time
+
 from odin_core.firestore_log import ReceiptStore
+
 
 def _make_receipt(trace_id: str, hop: int, ts: str):
     return {"trace_id": trace_id, "hop": hop, "ts": ts, "created_at": ts, "receipt_hash": f"h{hop}"}

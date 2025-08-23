@@ -1,5 +1,6 @@
 from odin_core.control import ControlPlane
 
+
 def test_custody_mode_update():
     cp = ControlPlane()
     cp.create_tenant('acme', 'Acme')

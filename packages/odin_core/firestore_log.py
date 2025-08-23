@@ -4,7 +4,7 @@ import os
 import pathlib
 import random
 import time
-from typing import Any, Dict, List, Optional, Callable
+from typing import Any, Callable, Dict, List, Optional
 
 try:  # runtime import; types optionally ignored via mypy config section
     from google.cloud import firestore  # type: ignore

@@ -1,8 +1,12 @@
-import base64, json, hashlib, datetime
-from fastapi.testclient import TestClient
-from services.gateway.main import app
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+import base64
+import datetime
+import hashlib
+
 from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from fastapi.testclient import TestClient
+
+from services.gateway.main import app
 
 client = TestClient(app)
 
@@ -13,7 +17,8 @@ def _send_basic_envelope(trace_id: str):
     priv = Ed25519PrivateKey.generate()
     pub = priv.public_key().public_bytes(encoding=serialization.Encoding.Raw, format=serialization.PublicFormat.Raw)
     payload = {"x":1}
-    import json as _json, hashlib as _hashlib
+    import hashlib as _hashlib
+    import json as _json
     payload_bytes = _json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     cid = "sha256:" + _hashlib.sha256(payload_bytes).hexdigest()
     ts = datetime.datetime.now(datetime.timezone.utc).isoformat()

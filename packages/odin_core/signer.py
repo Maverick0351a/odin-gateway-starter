@@ -170,6 +170,7 @@ class AzureKVSigner:
     """
     def __init__(self, key_id: str):
         from urllib.parse import urlparse
+
         from azure.identity import DefaultAzureCredential  # type: ignore
         from azure.keyvault.keys import KeyClient  # type: ignore
         from azure.keyvault.keys.crypto import CryptographyClient  # type: ignore
@@ -212,6 +213,7 @@ class AzureKVSigner:
 
     def sign(self, message: bytes) -> str:
         from azure.keyvault.keys.crypto import SignatureAlgorithm  # type: ignore
+
         from .crypto import b64u_encode as _b64
         resp = self._crypto.sign(SignatureAlgorithm.ED25519, message)
         return _b64(resp.signature)

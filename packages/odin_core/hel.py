@@ -1,6 +1,12 @@
+import json
+import os
+import shutil
+import subprocess
+import tempfile
 from dataclasses import dataclass
-from typing import List, Dict, Set, Optional, Any, Callable
-import os, json, subprocess, tempfile, textwrap, shutil
+from typing import Any, Dict, List, Optional, Set
+
+
 @dataclass
 class HELResult:
     passed: bool
@@ -131,6 +137,6 @@ class PolicyManager:
 
 class _AlwaysAllowEngine:
     def check_http_egress(self, host: str, tenant_key: Optional[str] = None) -> HELResult:
-        return HELResult(True, "OPEN:HTTP_EGRESS", ["open profile allow"])  # type: ignore
+        return HELResult(True, "OPEN:HTTP_EGRESS", ["open profile allow"])
 
 __all__ = ["HELResult", "PolicyEngine", "RegoPolicyEngine", "PolicyManager"]

@@ -1,4 +1,8 @@
-import json, uuid, datetime
+import datetime
+import json
+import uuid
+
+
 def canonical_json(obj) -> bytes:
     return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
 def now_ts_iso() -> str:

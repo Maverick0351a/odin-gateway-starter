@@ -1,7 +1,14 @@
-import os, sys, json, hashlib, base64, importlib, uuid
+import base64
+import hashlib
+import importlib
+import json
+import os
+import sys
+import uuid
 from datetime import datetime, timezone
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
 from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fastapi.testclient import TestClient
 
 # Configure env BEFORE importing gateway

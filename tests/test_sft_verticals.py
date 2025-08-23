@@ -1,4 +1,3 @@
-import pytest
 
 from odin_core.sft import transform_payload
 

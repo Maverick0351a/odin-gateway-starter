@@ -388,20 +388,25 @@ async def accept_envelope(ope: OPE, request: Request):
                 tenant_ctx_local = {"tenant_id": api_key_local, "secret": None, "rate_limit_rpm": t.get("rate_limit_rpm",0), "allowlist": t.get("allowlist", [])}
         if auth_required:
             if not api_key_local:
-                REQS.labels(status="unauthorized").inc(); raise HTTPException(401, detail="Missing API key")
+                REQS.labels(status="unauthorized").inc()
+                raise HTTPException(401, detail="Missing API key")
             secret = tenant_ctx_local.get("secret") if tenant_ctx_local else API_KEY_SECRETS.get(api_key_local)
             if not secret:
-                REQS.labels(status="unauthorized").inc(); raise HTTPException(401, detail="Unknown API key")
+                REQS.labels(status="unauthorized").inc()
+                raise HTTPException(401, detail="Unknown API key")
             mac_header = request.headers.get("x-odin-api-mac")
             if not mac_header:
-                REQS.labels(status="unauthorized").inc(); raise HTTPException(401, detail="Missing X-ODIN-API-MAC header")
+                REQS.labels(status="unauthorized").inc()
+                raise HTTPException(401, detail="Missing X-ODIN-API-MAC header")
             expected = hmac.new(secret.encode(), message, hashlib.sha256).digest()
             if not hmac.compare_digest(b64u_encode(expected), mac_header):
-                REQS.labels(status="unauthorized").inc(); raise HTTPException(401, detail="Bad API key MAC")
+                REQS.labels(status="unauthorized").inc()
+                raise HTTPException(401, detail="Bad API key MAC")
             if tenant_ctx_local:
                 rpm = tenant_ctx_local.get("rate_limit_rpm", 0) or 0
                 if rpm > 0 and not rate_limiter.check(tenant_ctx_local["tenant_id"], rpm):
-                    REQS.labels(status="rate_limited").inc(); raise HTTPException(429, detail="Rate limit exceeded")
+                    REQS.labels(status="rate_limited").inc()
+                    raise HTTPException(429, detail="Rate limit exceeded")
         return tenant_ctx_local
 
     tenant_ctx = _auth_and_rate_limit()
@@ -419,7 +424,8 @@ async def accept_envelope(ope: OPE, request: Request):
             hel = type(hel)(passed=True, rule=hel.rule, reasons=hel.reasons + [f"tenant allowlist host {host} allowed"])
         result = {"passed": hel.passed, "rules": [{"rule": hel.rule, "reasons": hel.reasons}]}
         if not hel.passed:
-            REQS.labels(status="policy_block").inc(); raise HTTPException(403, detail=f"Egress blocked by policy: {hel.reasons}")
+            REQS.labels(status="policy_block").inc()
+            raise HTTPException(403, detail=f"Egress blocked by policy: {hel.reasons}")
         return result
 
     policy_result = _egress_policy(tenant_ctx)

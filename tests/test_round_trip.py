@@ -1,8 +1,13 @@
-import json, hashlib, base64, sys
+import base64
+import hashlib
+import json
+import sys
 from datetime import datetime, timezone
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
 from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fastapi.testclient import TestClient
+
 
 def b64u(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b'=') .decode('ascii')

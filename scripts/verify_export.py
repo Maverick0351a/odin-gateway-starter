@@ -1,6 +1,12 @@
-import argparse, json, hashlib, base64, sys
+import argparse
+import base64
+import hashlib
+import json
+import sys
+
 import requests
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
 
 def b64u_decode(s: str) -> bytes:
     s = s.strip()

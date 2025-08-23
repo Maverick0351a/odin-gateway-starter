@@ -1,5 +1,7 @@
 # Auto-added to ensure local 'packages' directory is importable (CI + local)
-import sys, pathlib
+import pathlib
+import sys
+
 root = pathlib.Path(__file__).resolve().parent
 pkg = root / 'packages'
 if pkg.exists():

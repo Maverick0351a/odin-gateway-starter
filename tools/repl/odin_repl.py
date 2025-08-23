@@ -1,6 +1,10 @@
 
-import os, sys, subprocess, json
+import json
+import os
+import subprocess
+import sys
 from pathlib import Path
+
 from openai import OpenAI
 
 BANNER = "ODIN Terminal REPL - build assistant\nType /help for commands. Ctrl+C to exit.\n"

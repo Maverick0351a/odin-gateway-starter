@@ -1,5 +1,5 @@
-import os
 from odin_core.hel import PolicyManager
+
 
 def test_policy_profile_strict(monkeypatch):
     monkeypatch.setenv('ODIN_POLICY_PROFILE', 'strict')

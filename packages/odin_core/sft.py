@@ -1,15 +1,19 @@
-from typing import Tuple, Dict, Any
 import json
+from typing import Any, Callable, Dict, Tuple, TypeVar
+
 
 class SFTError(Exception):
     pass
 
 # Simple registry for semantic format transformations
 # key: (from_type, to_type) -> transformer(payload) -> (new_payload, notes)
-_REGISTRY: Dict[tuple[str, str], callable] = {}
+TransformFn = Callable[[Dict[str, Any]], Tuple[Dict[str, Any], Dict[str, Any]]]
+_REGISTRY: Dict[tuple[str, str], TransformFn] = {}
 
-def sft(from_type: str, to_type: str):
-    def decorator(fn):
+F = TypeVar("F", bound=TransformFn)
+
+def sft(from_type: str, to_type: str) -> Callable[[F], F]:
+    def decorator(fn: F) -> F:
         _REGISTRY[(from_type, to_type)] = fn
         return fn
     return decorator
@@ -104,9 +108,10 @@ def transform_payload(payload: Dict[str, Any], payload_type: str, target_type: s
     if payload_type == target_type:
         return payload, {"notes": "already_normalized"}
     key = (payload_type, target_type)
-    if key not in _REGISTRY:
+    fn = _REGISTRY.get(key)
+    if fn is None:
         raise SFTError(f"No SFT transformer registered for {payload_type} -> {target_type}")
-    return _REGISTRY[key](payload)
+    return fn(payload)
 
 # ---------------------------
 # 4) ISO20022 → OpenAI tool-use (reverse mapping for audit / round-trip demo)

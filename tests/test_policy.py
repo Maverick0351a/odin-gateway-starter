@@ -1,6 +1,7 @@
 import os
+
 import pytest
-from odin_core.hel import PolicyManager, PolicyEngine, HELResult
+from odin_core.hel import HELResult, PolicyManager
 
 
 def test_policy_manager_default_hel_allows_configured_host(monkeypatch):

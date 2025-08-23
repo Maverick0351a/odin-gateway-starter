@@ -1,10 +1,10 @@
-import os
 import importlib
+import os
+
 import pytest
 
 # We only test factory selection + error surfaces without invoking real cloud APIs.
 # Real KMS integration tests would be added behind environment flags.
-
 from packages.odin_core import signer as signer_mod  # type: ignore
 
 

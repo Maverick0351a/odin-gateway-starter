@@ -1,7 +1,11 @@
 # Generate an Ed25519 keypair for ODIN (base64url raw 32-byte private, and JWKS)
-import base64, json, hashlib
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+import base64
+import hashlib
+import json
+
 from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
 
 def b64u(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b'=').decode('ascii')

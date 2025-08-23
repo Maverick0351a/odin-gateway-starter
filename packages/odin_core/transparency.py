@@ -17,9 +17,13 @@ Future:
     computing root pre-sign or a two-phase receipt signature design).
 """
 from __future__ import annotations
-from typing import List, Optional, Callable
-import threading, hashlib, os
+
+import hashlib
+import os
+import threading
 from datetime import datetime, timezone
+from typing import Callable, List, Optional
+
 
 class TransparencyLog:
     def __init__(self, path: Optional[str] = None):

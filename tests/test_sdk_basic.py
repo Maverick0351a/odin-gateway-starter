@@ -1,9 +1,12 @@
-import json, base64, hashlib, sys
+import os
+import pathlib
+import sys
 from datetime import datetime, timezone
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
 from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fastapi.testclient import TestClient
-import os, sys, pathlib
+
 os.environ.pop('ODIN_REQUIRE_API_KEY', None)
 pkg_dir = pathlib.Path(__file__).resolve().parents[1] / 'packages'
 sys.path.insert(0, str(pkg_dir))
@@ -12,10 +15,13 @@ if 'services.gateway.main' in sys.modules:
 
 # Ensure packages path
 import pathlib
+
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[1] / "packages"))
 
-from services.gateway.main import app
 from odin_sdk.client import OPEClient, b64u
+
+from services.gateway.main import app
+
 
 def test_sdk_send_and_verify():
     # Generate sender key
