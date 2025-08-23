@@ -1,34 +1,31 @@
-# ODIN Gateway Starter 🚀
+# ODIN Secure AI to AI Utility Stack
 
 [![CI](https://github.com/Maverick0351a/odin-gateway-starter/actions/workflows/ci.yml/badge.svg)](https://github.com/Maverick0351a/odin-gateway-starter/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/tests-passing-brightgreen)](https://github.com/Maverick0351a/odin-gateway-starter/actions)
-[![Python](https://img.shields.io/badge/python-3.11%20|%203.12-blue)](https://www.python.org/)
+[![PyPI](https://img.shields.io/pypi/v/odin-sdk.svg)](https://pypi.org/project/odin-sdk/)
+[![npm (next)](https://img.shields.io/npm/v/@maverick0351a/odin-sdk-js/next.svg)](https://www.npmjs.com/package/@maverick0351a/odin-sdk-js)
 [![License](https://img.shields.io/badge/license-Apache--2.0-lightgrey)](LICENSE)
-[![Cloud Run](https://img.shields.io/badge/deploy-Google%20Cloud%20Run-orange)](https://cloud.run/)
-[![PyPI](https://img.shields.io/pypi/v/odin-sdk.svg)](https://pypi.org/project/odin-sdk/) [![PyPI - Python Version](https://img.shields.io/pypi/pyversions/odin-sdk.svg)](https://pypi.org/project/odin-sdk/) [![PyPI - Downloads](https://img.shields.io/pypi/dm/odin-sdk.svg?label=downloads)](https://pypi.org/project/odin-sdk/)
-[![npm](https://img.shields.io/npm/v/@maverick0351a/odin-sdk-js/next.svg?label=npm@next)](https://www.npmjs.com/package/@maverick0351a/odin-sdk-js) [![npm (latest)](https://img.shields.io/npm/v/@maverick0351a/odin-sdk-js.svg?label=npm@latest)](https://www.npmjs.com/package/@maverick0351a/odin-sdk-js) [![npm downloads](https://img.shields.io/npm/dm/@maverick0351a/odin-sdk-js.svg)](https://www.npmjs.com/package/@maverick0351a/odin-sdk-js)
 
 > Production‑ready starter for governed, verifiable AI→AI communication using the **ODIN OPE (Open Proof Envelope)** protocol.
 
-ODIN provides:
-* 🔑 **Gateway + Relay services** (FastAPI) with policy enforcement (HEL), schema transformation (SFT), cryptographic receipts
-* 📦 **ODIN Core**: Ed25519 key mgmt + JWKS, CID hashing, canonical JSON, receipt chaining (Firestore or JSONL), policy + transform engines
-* 🧪 **Test suite** (pytest) covering health, JWKS, E2E envelope, export bundle, SDK flows
-* 🐳 **Container builds** (Dockerfiles) for gateway, relay, dashboard
-* 📊 **Dashboard** (FastAPI + Jinja2) to inspect hop chains & verify export bundles
-* 🛠️ **SDK / CLI**: Python (editable) + scaffold for future Node/TS
-* ☁️ **Cloud Run deployment** scripts + smoke checks
-* 🔐 Optional API key + HMAC layer (defense in depth)
+Core capabilities:
+* Gateway + Relay services (FastAPI) with policy enforcement (HEL), schema transformation (SFT), cryptographic receipts
+* ODIN Core: Ed25519 key management + JWKS, CID hashing, canonical JSON, receipt chaining (Firestore or JSONL), policy + transform engines
+* Test suite (pytest) covering health, JWKS, end-to-end envelope, export bundle, SDK flows
+* Container builds (Dockerfiles) for gateway, relay, dashboard
+* Dashboard (FastAPI + Jinja2) to inspect chains and verify export bundles
+* SDK / CLI: Python (editable) plus early JavaScript preview
+* Cloud Run deployment scripts + smoke checks
+* Optional API key + HMAC layer (defense in depth)
 
 Start by opening **`AGENT.md`** and telling Copilot Chat:
 > Follow AGENT.md from Task 0. Ask me for any missing env vars.
 
 **Quick Links:**
-[Quick Start](#-quick-start-python-sdk--gateway) · [CLI (Py)](#-cli-reference-python-sdk) · [JS SDK](#-js--typescript-sdk) · [Export Verification](#-export--verification-manual) · [Security](#-security-notes) · [Roadmap](#-roadmap)
+[Quick Start](#quick-start-python-sdk--gateway) · [CLI (Py)](#cli-reference-python-sdk) · [JS SDK](#js--typescript-sdk) · [Export Verification](#export--verification-manual) · [Security](#security-notes) · [Roadmap](#roadmap)
 
 ---
 
-## 📚 Table of Contents
+## Table of Contents
 
 1. [Architecture Snapshot](#-architecture-snapshot)
 2. [Key Environment Variables](#-key-environment-variables)
@@ -45,7 +42,7 @@ Start by opening **`AGENT.md`** and telling Copilot Chat:
 
 ---
 
-## 🧬 Architecture Snapshot
+## Architecture Snapshot
 
 High-level flow (summary): Signed envelopes in, transformed + policy‑checked, hash‑linked receipts out, optional relay, verifiable export bundles.
 
@@ -68,7 +65,7 @@ Export endpoint: `/v1/receipts/export/{trace_id}` returns a signed bundle; clien
 
 ---
 
-## ⚙️ Key Environment Variables
+## Key Environment Variables
 
 | Var | Purpose | Example / Notes |
 |-----|---------|-----------------|
@@ -84,7 +81,7 @@ Set API key + MAC: client includes `X-ODIN-API-Key` + `X-ODIN-API-MAC` = base64u
 
 ---
 
-## 🔐 Verification Surfaces
+## Verification Surfaces
 * JWKS: `/.well-known/jwks.json`
 * Response headers: `X-ODIN-Receipt-Hash`, `X-ODIN-Response-CID`, `X-ODIN-Signature`, `X-ODIN-KID`
 * Export bundle: signed pattern assures integrity + ordering
@@ -92,7 +89,7 @@ Set API key + MAC: client includes `X-ODIN-API-Key` + `X-ODIN-API-MAC` = base64u
 
 ---
 
-## ⚡ Quick Start (Python SDK + Gateway)
+## Quick Start (Python SDK + Gateway)
 
 ### 0. Environment Setup (optional but recommended)
 ```powershell
@@ -166,7 +163,7 @@ Routes:
 * `/trace/{trace_id}` chain integrity (hash + link)
 * `/export/{trace_id}` bundle + signature banner, copy CID button
 
-## ☁️ Cloud Run Deployment
+## Cloud Run Deployment
 Prereqs:
 1. Install & auth gcloud: `gcloud auth login` / `gcloud auth application-default login`
 2. Enable services (once): `gcloud services enable run.googleapis.com artifactregistry.googleapis.com firestore.googleapis.com`
@@ -219,7 +216,7 @@ odin export-verify --gateway-url <GatewayURL> --priv <seed> --kid <kid> --trace-
 
 ---
 
-## 🧰 CLI Reference (Python SDK)
+## CLI Reference (Python SDK)
 
 The Python package installs three interchangeable entry points: `odin`, `odinpy`, and `odin-sdk` (use whichever is on your PATH). Examples below use `odinpy` for clarity.
 
@@ -293,7 +290,7 @@ Get-Content .\examples\openai_invoice.json | odinpy send --ptype openai.tooluse.
 
 ---
 
-## 🟦 JS / TypeScript SDK
+## JS / TypeScript SDK
 
 Located in `packages/odin_sdk_js` (early preview). Provides `OPEClient` plus a minimal Node CLI (`bin/odin.js`).
 
@@ -356,7 +353,7 @@ HMAC / API key (optional): add `--api-key <key>` and `--hmac-secret <secret>`; c
 
 Planned additions: chain fetch, export verification parity with Python CLI.
 
-## ✅ Tests / CI
+## Tests / CI
 ```powershell
 python -m pytest -q
 ```
@@ -367,7 +364,7 @@ Health endpoint: `/healthz` (alias `/health`). Metrics: `/metrics` (Prometheus e
 
 ---
 
-## 📂 Project Layout
+## Project Layout
 
 ```
 ├─ AGENT.md                     # Playbook for autonomous agent (Copilot) to operate repo
@@ -421,7 +418,7 @@ Legend:
 
 ---
 
-## 🔄 Export & Verification (Manual)
+## Export & Verification (Manual)
 1. POST envelope(s) to gateway (collect a `trace_id`).
 2. GET `/v1/receipts/export/{trace_id}` → obtain `bundle`, `bundle_cid`, `bundle_signature`.
 3. Recompute canonical JSON of `bundle`, sha256 → must equal `bundle_cid`.
@@ -430,7 +427,7 @@ Legend:
 
 ---
 
-## 🔐 Security Notes
+## Security Notes
 * Keys: Gateway Ed25519 private key (seed) is a 32‑byte secret; store outside repo (env / secret manager). Rotate by issuing a new `KID` and keeping the old public key in `ODIN_ADDITIONAL_PUBLIC_JWKS` during migration.
 * Signed Contexts: Envelopes sign `<cid>|<trace_id>|<ts>`; export bundles sign `<bundle_cid>|<trace_id>|<exported_at>` binding content + lineage + freshness.
 * Tamper Evidence: Receipts are hash‑linked (`prev_receipt_hash`); altering history breaks the chain.
@@ -438,14 +435,14 @@ Legend:
 * Replay Hardening (future): Enforce max age / skew on `ts` and optional nonce cache.
 * Separation: Relay isolates egress allowing stricter network controls.
 
-## 🧱 Versioning & Stability
+## Versioning & Stability
 Stable fields: `trace_id`, `cid`, `payload_type`, `target_type`, `signature`, `receipt_hash`, `prev_receipt_hash`.
 
 Extensible (additive only): policy metadata, normalization annotations, export bundle wrapper keys.
 
 Breaking changes introduce a new versioned target type (e.g. `invoice.iso20022.v2`) or additive receipt field rather than mutating existing ones.
 
-## 🗺️ Roadmap
+## Roadmap
 * Relay retry/backoff & dead‑letter
 * JS CLI parity: chain + export verify
 * Lint & type checks (ruff / mypy) in CI
@@ -455,12 +452,12 @@ Breaking changes introduce a new versioned target type (e.g. `invoice.iso20022.v
 * Pluggable policy modules
 * Merkle aggregation for batch proofs
 
-## 🤝 Contributing
+## Contributing
 PRs & issues welcome. Run tests (`python -m pytest -q`) before submitting. Please keep receipts & cryptographic semantics backwards‑compatible; if you need to break them, add a new versioned target type or receipt field while preserving old behavior.
 
 ---
 
-## 🛡️ License
+## License
 [Apache 2.0](LICENSE)
 
 ---
