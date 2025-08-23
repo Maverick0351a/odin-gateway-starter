@@ -73,8 +73,9 @@ Export endpoint: `/v1/receipts/export/{trace_id}` returns a signed bundle; clien
 
 | Var | Purpose | Example / Notes |
 |-----|---------|-----------------|
-| `ODIN_GATEWAY_PRIVATE_KEY_B64` | Base64url Ed25519 32‑byte seed for gateway signing | Generated via `scripts/gen_keys.py` |
-| `ODIN_GATEWAY_KID` | Key ID exposed in JWKS and headers | Any unique string (e.g. `gw-2025-01`) |
+| `ODIN_SIGNER_BACKEND` | Signer backend selector (`file`) | `file` (default) – future: `gcpkms`, `awskms`, `azurekv` |
+| `ODIN_GATEWAY_PRIVATE_KEY_B64` | Base64url Ed25519 32‑byte seed for gateway signing (file backend) | Generated via `scripts/gen_keys.py` |
+| `ODIN_GATEWAY_KID` | Key ID exposed in JWKS and headers (can be auto‑derived) | Any unique string (e.g. `gw-2025-01`) |
 | `ODIN_ADDITIONAL_PUBLIC_JWKS` | JSON string of legacy/extra JWKs for verification | `{"keys":[...]}` |
 | `RELAY_URL` | If set, gateway will POST normalized payloads to relay | `http://relay:8090` |
 | `ODIN_API_KEY_SECRETS` | JSON map of API key → HMAC secret (legacy static mode) | `{"demo":"supersecret"}` |
@@ -659,6 +660,7 @@ Breaking changes introduce a new versioned target type (e.g. `invoice.iso20022.v
 * Publish to PyPI / npm
 * Pluggable policy modules
 * Merkle aggregation for batch proofs
+* Additional signer backends (GCP KMS, AWS KMS, Azure Key Vault) using the new abstraction
 
 ## Contributing
 PRs & issues welcome. Run tests (`python -m pytest -q`) before submitting. Please keep receipts & cryptographic semantics backwards‑compatible; if you need to break them, add a new versioned target type or receipt field while preserving old behavior.

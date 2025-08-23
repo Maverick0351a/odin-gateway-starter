@@ -22,10 +22,11 @@ for anc in pathlib.Path(__file__).resolve().parents:
         break
 
 from odin_core import (
-    load_or_create_private_key, sign_bytes, verify_with_jwk,
+    verify_with_jwk,
     cid_sha256, now_ts_iso, gen_trace_id, transform_payload, SFTError,
     PolicyEngine, build_receipt, ReceiptStore, b64u_encode, canonical_json
 )
+from odin_core.signer import load_signer
 try:
     from odin_core.control import ControlPlane  # direct module import
 except Exception as _cp_err:  # noqa
@@ -60,15 +61,9 @@ _REGISTRY = CollectorRegistry()
 REQS = Counter("odin_gateway_requests_total", "Gateway envelope requests", ["status"], registry=_REGISTRY)
 PROC = Histogram("odin_gateway_processing_seconds", "Gateway envelope processing seconds", registry=_REGISTRY)
 
-ODIN_GATEWAY_PRIVATE_KEY_B64 = os.getenv("ODIN_GATEWAY_PRIVATE_KEY_B64")
-priv_key, env_kid = load_or_create_private_key(ODIN_GATEWAY_PRIVATE_KEY_B64)
-GATEWAY_KID = os.getenv("ODIN_GATEWAY_KID", env_kid)
-
-pub_raw = priv_key.public_key().public_bytes(
-    encoding=serialization.Encoding.Raw,
-    format=serialization.PublicFormat.Raw
-)
-GATEWAY_JWK = {"kty": "OKP", "crv": "Ed25519", "x": b64u_encode(pub_raw), "kid": GATEWAY_KID}
+_signer = load_signer()
+GATEWAY_KID = _signer.kid()
+GATEWAY_JWK = _signer.public_jwk()
 
 def _load_additional_jwks():
     raw = os.getenv("ODIN_ADDITIONAL_PUBLIC_JWKS")
@@ -220,7 +215,8 @@ def export_chain(trace_id: str):
     }
     bundle_bytes = canonical_json(bundle)
     bundle_cid = cid_sha256(bundle_bytes)
-    sig = sign_bytes(priv_key, f"{bundle_cid}|{trace_id}|{exported_at}".encode("utf-8"))
+    # Gateway signs the export bundle using active signer abstraction
+    sig = _signer.sign(f"{bundle_cid}|{trace_id}|{exported_at}".encode("utf-8"))
     resp = {"bundle": bundle, "bundle_cid": bundle_cid, "bundle_signature": sig}
     headers = {"X-ODIN-Bundle-CID": bundle_cid, "X-ODIN-KID": GATEWAY_KID, "X-ODIN-Bundle-Signature": sig}
     return JSONResponse(jsonable_encoder(resp), headers=headers)
@@ -335,7 +331,7 @@ async def accept_envelope(ope: OPE, request: Request):
     chain = store.get_chain(ope.trace_id)
     prev_hash = chain[-1].get("receipt_hash") if chain else None
     receipt = build_receipt(
-        priv=priv_key,
+        signer=_signer,
         trace_id=ope.trace_id,
         hop_index=len(chain),
         request_cid=cid,
@@ -371,7 +367,7 @@ async def accept_envelope(ope: OPE, request: Request):
     }
     body_bytes = json.dumps(resp_body, sort_keys=True, separators=(",", ":")).encode("utf-8")
     resp_cid = cid_sha256(body_bytes)
-    sig = sign_bytes(priv_key, f"{resp_cid}|{ope.trace_id}|{receipt['ts']}".encode("utf-8"))
+    sig = _signer.sign(f"{resp_cid}|{ope.trace_id}|{receipt['ts']}".encode("utf-8"))
 
     headers = {
         "X-ODIN-Trace-Id": ope.trace_id,

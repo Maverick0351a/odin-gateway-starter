@@ -10,9 +10,9 @@ import httpx
 import sys, pathlib
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[2] / "packages"))
 from odin_core import (
-    load_or_create_private_key, sign_bytes,
     PolicyEngine, cid_sha256, now_ts_iso, b64u_encode
 )
+from odin_core.signer import load_signer
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("odin.relay")
@@ -24,9 +24,8 @@ RTIME = Histogram("odin_relay_processing_seconds", "Relay processing seconds", r
 RELAY_ALLOWLIST = os.getenv("RELAY_ALLOWLIST", "")
 policy_engine = PolicyEngine(allowlist_hosts=[h.strip() for h in RELAY_ALLOWLIST.split(",") if h.strip()])
 
-ODIN_GATEWAY_PRIVATE_KEY_B64 = os.getenv("ODIN_GATEWAY_PRIVATE_KEY_B64")
-priv_key, env_kid = load_or_create_private_key(ODIN_GATEWAY_PRIVATE_KEY_B64)
-RELAY_KID = os.getenv("ODIN_RELAY_KID", env_kid)
+_signer = load_signer()
+RELAY_KID = os.getenv("ODIN_RELAY_KID", _signer.kid())
 
 app = FastAPI(title="ODIN Relay", version="0.3.0")
 
@@ -119,7 +118,7 @@ async def relay(req: RelayRequest):
     body_bytes = json.dumps(out, sort_keys=True, separators=(",", ":")).encode("utf-8")
     resp_cid = cid_sha256(body_bytes)
     ts = now_ts_iso()
-    sig = sign_bytes(priv_key, f"{resp_cid}|{req.trace_id}|{ts}".encode("utf-8"))
+    sig = _signer.sign(f"{resp_cid}|{req.trace_id}|{ts}".encode("utf-8"))
 
     headers_out = {
         "X-ODIN-Trace-Id": req.trace_id,
