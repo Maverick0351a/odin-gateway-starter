@@ -81,7 +81,7 @@ def cmd_send(args):
     trace = args.trace_id or f"cli-{uuid.uuid4()}"
     env = client.create_envelope(payload, args.ptype, args.ttype, trace_id=trace, ts=args.ts)
     try:
-        data, headers = client.send_envelope(env)
+        data, headers = client.send_envelope(env, verify_chain=args.verify_chain)
     except Exception as e:
         _emit_error(args, f"send_failed: {e}", trace)
     out = {
@@ -247,6 +247,7 @@ def build_parser():
     s2.add_argument("--ts")
     s2.add_argument("--print-body", action="store_true")
     s2.add_argument("--json", action="store_true", help="Machine-readable JSON output")
+    s2.add_argument("--verify-chain", action="store_true", help="After send, fetch chain and ensure tail receipt hash matches response")
     s2.set_defaults(func=cmd_send)
 
     # chain

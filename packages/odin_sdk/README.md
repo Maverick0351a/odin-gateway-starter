@@ -6,7 +6,8 @@ Features:
 - Create signed envelopes (Ed25519) using pattern `{cid}|{trace_id}|{ts}`
 - Post to gateway `/v1/odin/envelope`
 - Automatic JWKS fetch & response signature verification (`X-ODIN-Signature`, `X-ODIN-Response-CID`)
-- Receipt chain retrieval & export bundle fetch / verification helpers
+- Optional immediate chain integrity check (`client.send_envelope(..., verify_chain=True)`)
+- Receipt chain retrieval & export bundle fetch / verification helpers (`client.verify_export_bundle`)
 - CLI (`odin`) with subcommands: `sign`, `send`, `chain`, `export-verify`
 
 ## Install (editable for development)
@@ -37,7 +38,7 @@ from odin_sdk.client import OPEClient
 client = OPEClient(gateway_url="http://127.0.0.1:8080", sender_priv_b64=<seed>, sender_kid="demo")
 payload = {...}
 env = client.create_envelope(payload, "openai.tooluse.invoice.v1", "invoice.iso20022.v1")
-body, headers = client.send_envelope(env)
+body, headers = client.send_envelope(env, verify_chain=True)
 chain = client.get_chain(body["receipt"]["trace_id"])
 export = client.export_bundle(body["receipt"]["trace_id"])
 ```

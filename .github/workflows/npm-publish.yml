@@ -1,0 +1,76 @@
+name: npm-publish
+
+on:
+  workflow_dispatch:
+    inputs:
+      dist_tag:
+        description: "npm dist-tag (next or latest)"
+        required: true
+        default: "next"
+      working_directory:
+        description: "Relative path to JS SDK package"
+        required: false
+        default: "packages/odin_sdk_js"
+  push:
+    tags:
+      - "js-v*"          # e.g. js-v0.2.0 triggers publish with 'latest'
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ github.event.inputs.working_directory || 'packages/odin_sdk_js' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+            node-version: 20
+            registry-url: 'https://registry.npmjs.org'
+
+      - name: Determine dist-tag
+        id: tag
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/js-v* ]]; then
+            echo "dist_tag=latest" >> $GITHUB_OUTPUT
+          else
+            echo "dist_tag=${{ github.event.inputs.dist_tag }}" >> $GITHUB_OUTPUT
+          fi
+          echo "Using dist-tag $(cat $GITHUB_OUTPUT | grep dist_tag)"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Verify version consistency
+        run: |
+          VERSION=$(jq -r '.version' package.json)
+          echo "Package version: $VERSION"
+          if [[ -z "$VERSION" || "$VERSION" == "null" ]]; then
+            echo "Missing version in package.json" >&2; exit 1; fi
+
+      - name: Dry run (preview contents)
+        run: npm pack --dry-run
+
+      - name: Publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          DIST_TAG=${{ steps.tag.outputs.dist_tag }}
+          if [[ -z "$NODE_AUTH_TOKEN" ]]; then echo "NPM_TOKEN secret not set" >&2; exit 1; fi
+          echo "Publishing with dist-tag=$DIST_TAG"
+          npm publish --access public --tag "$DIST_TAG"
+
+      - name: Post-publish info
+        run: |
+          VERSION=$(jq -r '.version' package.json)
+          echo "Published @maverick0351a/odin-sdk-js@$VERSION with tag '${{ steps.tag.outputs.dist_tag }}'"

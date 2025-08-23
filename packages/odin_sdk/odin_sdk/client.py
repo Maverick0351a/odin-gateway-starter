@@ -32,7 +32,11 @@ class VerificationError(Exception):
     pass
 
 class OPEClient:
-    """Minimal client for creating, sending, and verifying OPE envelopes."""
+    """Minimal client for creating, sending, and verifying OPE envelopes.
+
+    Automatically verifies response signatures, receipt chain linkage,
+    and export bundles through helper methods.
+    """
     def __init__(self, gateway_url: str, sender_priv_b64: str, sender_kid: str):
         self.gateway_url = gateway_url.rstrip("/")
         priv_raw = b64u_decode(sender_priv_b64)
@@ -101,7 +105,7 @@ class OPEClient:
         except Exception as e:
             raise VerificationError(f"Response signature invalid: {e}")
 
-    def send_envelope(self, envelope: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, str]]:
+    def send_envelope(self, envelope: Dict[str, Any], verify_chain: bool = False) -> Tuple[Dict[str, Any], Dict[str, str]]:
         r = httpx.post(f"{self.gateway_url}/v1/odin/envelope", json=envelope, timeout=30)
         try:
             data = r.json()
@@ -111,6 +115,17 @@ class OPEClient:
             raise RuntimeError(f"Gateway error {r.status_code}: {data}")
         headers = {k.lower(): v for k, v in r.headers.items()}
         self._verify_response(data, headers)
+        if verify_chain:
+            # Basic integrity: fetch chain and ensure last receipt hash matches
+            trace = data.get("trace_id") or headers.get("x-odin-trace-id")
+            if trace:
+                chain = self.get_chain(trace)
+                hops = chain.get("hops") or []
+                if not hops:
+                    raise VerificationError("Empty chain returned")
+                last = hops[-1]
+                if last.get("receipt_hash") != headers.get("x-odin-receipt-hash"):
+                    raise VerificationError("Receipt hash mismatch vs chain tail")
         return data, headers
 
     def get_chain(self, trace_id: str) -> Dict[str, Any]:
@@ -122,3 +137,20 @@ class OPEClient:
         r = httpx.get(f"{self.gateway_url}/v1/receipts/export/{trace_id}", timeout=15)
         r.raise_for_status()
         return r.json()
+
+    # -------- Higher level verification helpers --------
+    def verify_export_bundle(self, bundle: Dict[str, Any]) -> bool:
+        bundle_obj = bundle.get("bundle") or bundle
+        receipts = bundle_obj.get("receipts") or []
+        prev = None
+        for i, rcp in enumerate(receipts):
+            # Re-hash receipt excluding signature
+            r_copy = dict(rcp)
+            r_copy.pop("receipt_signature", None)
+            local_hash = hashlib.sha256(canonical_json(r_copy)).hexdigest()
+            if local_hash != rcp.get("receipt_hash"):
+                raise VerificationError(f"Receipt hash mismatch at index {i}")
+            if prev and rcp.get("prev_receipt_hash") != prev.get("receipt_hash"):
+                raise VerificationError(f"Chain link mismatch at index {i}")
+            prev = rcp
+        return True

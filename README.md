@@ -10,7 +10,8 @@
 Core capabilities:
 * Gateway + Relay services (FastAPI) with policy enforcement (HEL), schema transformation (SFT), cryptographic receipts
 * ODIN Core: Ed25519 key management + JWKS, CID hashing, canonical JSON, receipt chaining (Firestore or JSONL), policy + transform engines
-* Test suite (pytest) covering health, JWKS, end-to-end envelope, export bundle, SDK flows
+* Control Plane (MVP): multi-tenant API key issuance, allowlists, rate limiting, admin endpoints
+* Test suite (pytest) covering health, JWKS, end-to-end envelope, export bundle, control plane, SDK flows
 * Container builds (Dockerfiles) for gateway, relay, dashboard
 * Dashboard (FastAPI + Jinja2) to inspect chains and verify export bundles
 * SDK / CLI: Python (editable) plus early JavaScript preview
@@ -29,16 +30,19 @@ Start by opening **`AGENT.md`** and telling Copilot Chat:
 
 1. [Architecture Snapshot](#-architecture-snapshot)
 2. [Key Environment Variables](#-key-environment-variables)
-3. [Verification Surfaces](#-verification-surfaces)
-4. [Quick Start](#-quick-start-python-sdk--gateway)
-5. [Cloud Run Deployment](#-cloud-run-deployment)
-6. [CLI Reference (Python)](#-cli-reference-python-sdk)
-7. [JS / TypeScript SDK](#-js--typescript-sdk)
-8. [Tests / CI](#-tests--ci)
-9. [Project Layout](#-project-layout)
-10. [Export & Verification (Manual)](#-export--verification-manual)
-11. [Contributing](#-contributing)
-12. [License](#-license)
+3. [Control Plane & Admin API](#-control-plane--admin-api)
+4. [Verification Surfaces](#-verification-surfaces)
+5. [Quick Start](#-quick-start-python-sdk--gateway)
+6. [Cloud Run Deployment](#-cloud-run-deployment)
+7. [CLI Reference (Python)](#-cli-reference-python-sdk)
+8. [JS / TypeScript SDK](#-js--typescript-sdk)
+9. [Tests / CI](#-tests--ci)
+10. [Project Layout](#-project-layout)
+11. [Export & Verification (Manual)](#-export--verification-manual)
+12. [Hosted Verify](#-hosted-verify)
+13. [Recipes](#-recipes)
+14. [Contributing](#-contributing)
+15. [License](#-license)
 
 ---
 
@@ -73,11 +77,81 @@ Export endpoint: `/v1/receipts/export/{trace_id}` returns a signed bundle; clien
 | `ODIN_GATEWAY_KID` | Key ID exposed in JWKS and headers | Any unique string (e.g. `gw-2025-01`) |
 | `ODIN_ADDITIONAL_PUBLIC_JWKS` | JSON string of legacy/extra JWKs for verification | `{"keys":[...]}` |
 | `RELAY_URL` | If set, gateway will POST normalized payloads to relay | `http://relay:8090` |
-| `ODIN_API_KEY_SECRETS` | JSON map of API key → HMAC secret enabling key+MAC auth | `{"demo":"supersecret"}` |
+| `ODIN_API_KEY_SECRETS` | JSON map of API key → HMAC secret (legacy static mode) | `{"demo":"supersecret"}` |
+| `CONTROL_PLANE_PATH` | Path to JSON state file for tenants/keys | `control_plane.json` |
+| `ODIN_REQUIRE_API_KEY` | Force API key auth even if no static map set | `1` / `true` |
+| `ODIN_ADMIN_TOKEN` | Enables admin endpoints when set (required token) | random strong string |
 | `FIRESTORE_PROJECT` / ADC | Enables Firestore receipt backend (otherwise JSONL) | GCP project id |
 | `RECEIPT_LOG_PATH` | Override JSONL receipt log path | Defaults under working dir |
 
 Set API key + MAC: client includes `X-ODIN-API-Key` + `X-ODIN-API-MAC` = base64url(HMAC_SHA256(secret, `<cid>|<trace_id>|<ts>`)).
+
+---
+
+## Control Plane & Admin API
+
+Multi-tenant governance (MVP) enabling dynamic API key issuance, allowlists, and rate limiting. Backed by a simple JSON file (atomic rewrite) suitable for local / prototype; swap with DB later.
+
+Admin authentication: provide header `X-Admin-Token: <ODIN_ADMIN_TOKEN>`.
+
+### Endpoints
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/v1/admin/tenants` | List tenants (key secrets hidden) |
+| POST | `/v1/admin/tenants` | Create tenant `{tenant_id,name}` |
+| GET | `/v1/admin/tenants/{tenant_id}` | Fetch tenant summary |
+| PATCH | `/v1/admin/tenants/{tenant_id}` | Update fields: `name`, `allowlist`, `rate_limit_rpm`, `status` |
+| DELETE | `/v1/admin/tenants/{tenant_id}` | Delete tenant |
+| POST | `/v1/admin/tenants/{tenant_id}/keys` | Issue API key (returns secret once) |
+| POST | `/v1/admin/tenants/{tenant_id}/keys/{key}/revoke` | Revoke key |
+
+### Request / Response Samples
+Create tenant:
+```bash
+curl -s -X POST http://127.0.0.1:8080/v1/admin/tenants \
+	-H "X-Admin-Token: $ODIN_ADMIN_TOKEN" \
+	-H 'Content-Type: application/json' \
+	-d '{"tenant_id":"acme","name":"Acme Corp"}' | jq
+```
+
+Issue key:
+```bash
+curl -s -X POST http://127.0.0.1:8080/v1/admin/tenants/acme/keys \
+	-H "X-Admin-Token: $ODIN_ADMIN_TOKEN" | jq
+```
+Response (example):
+```json
+{ "key": "k_abcd...", "secret": "s_xyz...", "active": true, "created_at": "2025-08-22T12:34:56Z" }
+```
+Store `key` & `secret` securely; secret is not retrievable later.
+
+### Using an Issued Key
+For each envelope:
+1. Build canonical message `<cid>|<trace_id>|<ts>` (same as signature payload)
+2. Compute `mac = base64url( HMAC_SHA256(secret, message) )`
+3. Add headers:
+	 * `X-ODIN-API-Key: <key>`
+	 * `X-ODIN-API-MAC: <mac>`
+
+Python snippet (manual HMAC):
+```python
+import hmac, hashlib, base64
+def b64u(b: bytes): return base64.urlsafe_b64encode(b).rstrip(b'=')
+message = f"{cid}|{trace_id}|{ts}".encode()
+mac = b64u(hmac.new(secret.encode(), message, hashlib.sha256).digest()).decode()
+headers = {"X-ODIN-API-Key": key, "X-ODIN-API-MAC": mac}
+```
+
+Rate limiting: if `rate_limit_rpm > 0`, requests above that per-minute threshold return HTTP 429.
+
+Allowlist: set `allowlist` array (hosts) via PATCH to enable per-tenant egress overrides even if global HEL would block.
+
+Fallback static mode: if `ODIN_API_KEY_SECRETS` is set, those keys are accepted alongside dynamic keys.
+
+Security notes:
+* Always send Admin API calls over HTTPS.
+* Rotate `ODIN_ADMIN_TOKEN` periodically; treat like a master credential.
+* Consider isolating admin surface behind a VPN / internal ingress in production.
 
 ---
 
@@ -358,7 +432,17 @@ Planned additions: chain fetch, export verification parity with Python CLI.
 python -m pytest -q
 ```
 
-GitHub Actions runs these on pushes & PRs (see badge above). Python 3.11 & 3.12 matrix.
+GitHub Actions runs these on pushes & PRs (see badge above). Python 3.11 & 3.12 matrix. Separate workflow `npm-publish.yml` handles JS package publishing (manual dispatch or tag `js-v*`).
+
+### JS SDK Publish
+1. Set repository secret `NPM_TOKEN` (automation token with publish rights).
+2. Manual prerelease:
+	* GitHub UI → Actions → `npm-publish` → Run workflow (dist_tag=`next`).
+3. Promote to latest:
+	* Update `package.json` version.
+	* Tag push: `git tag js-v0.2.0 && git push origin js-v0.2.0` (workflow auto uses `latest`).
+4. Verify: `npm view @maverick0351a/odin-sdk-js dist-tags`.
+
 
 Health endpoint: `/healthz` (alias `/health`). Metrics: `/metrics` (Prometheus exposition).
 
@@ -424,6 +508,130 @@ Legend:
 3. Recompute canonical JSON of `bundle`, sha256 → must equal `bundle_cid`.
 4. Verify Ed25519 signature over `<bundle_cid>|<trace_id>|<exported_at>` using JWKS active key.
 5. Inspect `chain_valid` and `receipts` link hashes.
+
+---
+
+## Hosted Verify
+
+The dashboard now exposes a public verification utility.
+
+> Deployment: After deploying the dashboard (e.g. Cloud Run) set `HOSTED_VERIFY_BASE_URL` (optional) and update docs/packages to point users here. Example: `https://odin-verify.example.com`.
+
+Set `HOSTED_VERIFY_BASE_URL` during deployment to advertise a canonical URL (e.g. Cloud Run custom domain).
+
+### Recommended Domain Layout
+
+| Purpose | Suggested Domain | Notes |
+|---------|------------------|-------|
+| Gateway API | `api.odinprotocol.dev` | Primary ingestion & export endpoints |
+| Hosted Verify | `verify.odinprotocol.dev` | Dashboard + `/verify/*` JSON APIs |
+| (Optional) Marketing | `www.odinprotocol.dev` | Static site / docs redirect |
+| (Optional) Relay | `relay.odinprotocol.dev` | Outbound normalization/egress service |
+
+### Deploy & Map Domains (Cloud Run)
+
+1. Build & deploy services (gateway + dashboard):
+```powershell
+./scripts/deploy_cloud_run.ps1 -Project <gcp-project> -Region us-central1 -Build -DeployDashboard -MapDomains `
+	-ApiDomain api.odinprotocol.dev -VerifyDomain verify.odinprotocol.dev
+```
+2. Script attempts domain mappings; fetch required DNS records:
+```powershell
+gcloud run domain-mappings list --region us-central1 --format json | ConvertTo-Json -Depth 6
+```
+3. Create DNS records at your registrar (A/AAAA or CNAME targets as instructed).
+4. Wait for certificate provisioning (5–15 min). Test:
+```powershell
+Invoke-RestMethod https://verify.odinprotocol.dev/healthz
+```
+5. Update SDK / README references to final URLs.
+
+### CORS Configuration
+If browser JS or cross-origin verification needed, set:
+```powershell
+$env:CORS_ALLOW_ORIGINS="https://verify.odinprotocol.dev,https://www.odinprotocol.dev"
+```
+The deploy script passes this to Cloud Run when present.
+
+Example (PowerShell):
+```powershell
+$env:HOSTED_VERIFY_BASE_URL="https://verify.example.com"
+```
+
+Placeholder public URL (replace after deploy): `https://YOUR-VERIFY-DOMAIN/`.
+
+Routes:
+* `/verify/{trace_id}` – JSON API: fetches export bundle from the gateway, recomputes bundle CID, validates receipt chain, and verifies signature variants ( `<bundle_cid>|<trace_id>|<exported_at>` or CID‑only fallback ).
+* `POST /verify/bundle` – Upload a bundle JSON file (optionally supply `gateway_url` + `kid`) to verify offline.
+* `/verify` (HTML) – UI page with trace lookup + bundle upload.
+
+JSON response fields:
+```jsonc
+{
+	"trace_id": "...",
+	"bundle_cid": "sha256:...",    // recomputed locally
+	"chain_ok": true,              // receipt hashes + linkage valid
+	"sig_ok": true,                // signature verified against JWKS
+	"sig_variant": "cid|trace|exported_at", // matched signing pattern
+	"count": 3,                    // receipt count
+	"gateway_kid": "gw-2025-01"
+}
+```
+
+Usage (PowerShell examples):
+```powershell
+# Trace verification (JSON)
+Invoke-RestMethod "http://127.0.0.1:8081/verify/$trace_id?gateway_url=http://127.0.0.1:8080" | ConvertTo-Json -Depth 5
+
+# Bundle upload
+Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8081/verify/bundle?gateway_url=http://127.0.0.1:8080&kid=$env:ODIN_GATEWAY_KID" -InFile .\bundle.json -ContentType application/json
+```
+
+Integrators can embed these endpoints in CI to attest chain integrity for compliance or auditing pipelines.
+
+---
+
+## Recipes
+
+### Quick Connect (Python SDK + Control Plane)
+```python
+from odin_sdk.client import OPEClient
+import os, requests
+
+# Fetch tenant API key from control plane admin endpoint (example)
+tenant_id = 'demo'
+cp_url = os.environ['CONTROL_PLANE_URL']
+api_key_info = requests.post(f"{cp_url}/admin/tenants/{tenant_id}/issue-key", headers={'x-admin-token': os.environ['ADMIN_TOKEN']}).json()
+os.environ['ODIN_API_KEY'] = api_key_info['key']
+os.environ['ODIN_API_SECRET'] = api_key_info['secret']
+
+client = OPEClient(os.getenv('ODIN_GATEWAY_URL','http://127.0.0.1:8080'), os.environ['ODIN_SENDER_PRIV_B64'], os.environ['ODIN_SENDER_KID'])
+resp = client.send_inline({'foo':1}, payload_type='openai.tooluse.invoice.v1', target_type='invoice.iso20022.v1')
+print(resp.trace_id, resp.receipt_hash)
+```
+
+### OpenAI Tool-use → ODIN Envelope (Python)
+```python
+tool_payload = { 'invoice_id':'INV-1','amount': 100.25, 'currency':'USD' }
+env = client.build_envelope(tool_payload, 'openai.tooluse.invoice.v1', 'invoice.iso20022.v1')
+client.send_envelope(env)
+```
+
+### Claude Tool-use → ODIN (Python)
+```python
+claude_payload = { 'tool':'create_invoice','args':{'invoice_id':'INV-2','amount':55,'currency':'EUR'} }
+env = client.build_envelope(claude_payload, 'anthropic.tooluse.invoice.v1', 'invoice.iso20022.v1')
+client.send_envelope(env)
+```
+
+### Vendor → ISO 20022 (JS SDK)
+```bash
+node bin/odin.js send --gateway http://127.0.0.1:8080 \
+	--key $SEED --kid sender-demo \
+	--payload '{"invoice_id":"INV-99","amount":42.5,"currency":"USD"}' \
+	--payload-type invoice.vendor.v1 \
+	--target-type invoice.iso20022.v1
+```
 
 ---
 

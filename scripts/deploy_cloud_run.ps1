@@ -9,7 +9,11 @@ Param(
     [string]$DashboardDockerfile = "Dockerfile.dashboard",
     [string]$GatewayPort = "8080",
     [string]$DashboardPort = "8081",
-    [switch]$DeployDashboard
+  [switch]$DeployDashboard,
+  [string]$ApiDomain = "api.odinprotocol.dev",
+  [string]$VerifyDomain = "verify.odinprotocol.dev",
+  [switch]$MapDomains,
+  [string]$CorsOrigins = "https://verify.odinprotocol.dev,https://www.odinprotocol.dev"
 )
 
 <#
@@ -76,9 +80,10 @@ else {
 Write-Info "Deploying Cloud Run service: $GatewayService"
 
 $gatewayEnv = @()
-foreach ($name in 'ODIN_GATEWAY_PRIVATE_KEY_B64','ODIN_GATEWAY_KID','ODIN_ADDITIONAL_PUBLIC_JWKS','ODIN_API_KEY_SECRETS','FIRESTORE_PROJECT','RECEIPT_LOG_PATH') {
+foreach ($name in 'ODIN_GATEWAY_PRIVATE_KEY_B64','ODIN_GATEWAY_KID','ODIN_ADDITIONAL_PUBLIC_JWKS','ODIN_API_KEY_SECRETS','FIRESTORE_PROJECT','RECEIPT_LOG_PATH','ODIN_REQUIRE_API_KEY','ODIN_ADMIN_TOKEN','CONTROL_PLANE_PATH') {
     if ($env:$name) { $gatewayEnv += "$name=$($env:$name)" }
 }
+if ($CorsOrigins) { $gatewayEnv += "CORS_ALLOW_ORIGINS=$CorsOrigins" }
 if (-not ($gatewayEnv | Where-Object { $_ -like 'ODIN_GATEWAY_PRIVATE_KEY_B64*'})) {
     Write-Warn "ODIN_GATEWAY_PRIVATE_KEY_B64 not present in environment; deployment will generate an ephemeral key (not recommended for prod)."
 }
@@ -99,7 +104,8 @@ Write-Info "Gateway URL: $GatewayURL"
 
 if ($DeployDashboard) {
     Write-Info "Deploying Cloud Run service: $DashboardService"
-    $dashEnv = @("GATEWAY_URL=$GatewayURL")
+  $dashEnv = @("GATEWAY_URL=$GatewayURL")
+  if ($env:HOSTED_VERIFY_BASE_URL) { $dashEnv += "HOSTED_VERIFY_BASE_URL=$($env:HOSTED_VERIFY_BASE_URL)" }
     gcloud run deploy $DashboardService `
       --image $DashboardImage `
       --platform managed `
@@ -120,6 +126,19 @@ try {
     Write-Info "Health: $(ConvertTo-Json $health -Compress)"
 } catch {
     Write-Warn "Health check failed: $($_.Exception.Message)"
+}
+
+if ($MapDomains) {
+  Write-Info "Creating domain mappings (may require DNS setup)..."
+  try {
+    gcloud run domain-mappings create --service $GatewayService --domain $ApiDomain --region $Region
+  } catch { Write-Warn "Gateway domain mapping might already exist or failed: $($_.Exception.Message)" }
+  if ($DeployDashboard) {
+    try {
+      gcloud run domain-mappings create --service $DashboardService --domain $VerifyDomain --region $Region
+    } catch { Write-Warn "Dashboard domain mapping might already exist or failed: $($_.Exception.Message)" }
+  }
+  Write-Info "Remember to add DNS records pointing to the Cloud Run domain mapping targets."
 }
 
 Write-Info "Done."

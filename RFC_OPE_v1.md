@@ -100,9 +100,9 @@ Payload JSON (object):
 Canonical bytes (UTF-8) -> `{"message":"hello","value":42}` (already ordered) =>
 CID:
 ```
-sha256:9b0e1ca5230d7c6e1f8e2b6c1fcf21a5b9eb364f2db6e1b635c1e9c8d1f5e6d4
+sha256:b4fc6703480276bbdc0fcf04fbf638c4ba709a64b1cb46fdd2c52994eab493bc
 ```
-(Example hex placeholder – replace with actual when generating.)
+Computed over the exact UTF-8 bytes of `{"message":"hello","value":42}`.
 
 Signing string example (ts=`2025-08-22T00:00:00+00:00`, trace=`11111111-1111-1111-1111-111111111111`):
 ```

@@ -1,0 +1,92 @@
+{
+  "signer": {
+    "current": null,
+    "legacy": []
+  },
+  "tenants": {
+    "badmac": {
+      "allowlist": [],
+      "api_keys": [
+        {
+          "active": true,
+          "created_at": "2025-08-23T05:47:55.885952+00:00",
+          "key": "k_UuILaavW_bI7Ww4v",
+          "secret": "s_E1FtfiejUBrf2mKvFzMQpuwbx0lXYnS2"
+        },
+        {
+          "active": true,
+          "created_at": "2025-08-23T05:49:28.767881+00:00",
+          "key": "k_l-SrSZDo0dCCADzy",
+          "secret": "s_PGX0JpXVX7hzLqMBeUdqfKQt1XlQx4Uw"
+        },
+        {
+          "active": true,
+          "created_at": "2025-08-23T05:50:31.418472+00:00",
+          "key": "k_cNF8kwu-vpGKUEnT",
+          "secret": "s_vyx6f2i6-x1goazhKj2dBvSNny6eb7rr"
+        },
+        {
+          "active": true,
+          "created_at": "2025-08-23T05:51:32.685678+00:00",
+          "key": "k_HwHJItaA3fxPMIh-",
+          "secret": "s_GOkDZakR-xnEJKYN7Mk_29ygsy3qzYYr"
+        }
+      ],
+      "audit": {
+        "forward_exports": false,
+        "forward_receipts": false,
+        "sink_config": {},
+        "sink_type": null
+      },
+      "created_at": "2025-08-23T05:47:55.881324+00:00",
+      "name": "badmac",
+      "rate_limit_rpm": 0,
+      "status": "active"
+    },
+    "tamper": {
+      "allowlist": [],
+      "api_keys": [
+        {
+          "active": true,
+          "created_at": "2025-08-23T05:47:55.935833+00:00",
+          "key": "k_pLKfN7e4T0PUAdqn",
+          "secret": "s_o8sEQzdbevedzmSYwWdRtgqqjydAx2RW"
+        },
+        {
+          "active": true,
+          "created_at": "2025-08-23T05:48:02.212088+00:00",
+          "key": "k_4Ho-LZuHX4pO2dkz",
+          "secret": "s_1g4xU7OmX6j4CFtkPUU2VZ6Q1BvcqFdb"
+        },
+        {
+          "active": true,
+          "created_at": "2025-08-23T05:49:28.801945+00:00",
+          "key": "k_dyxAf8QaUyQV-Pj0",
+          "secret": "s_MiE2Rla3_fj5G4qg57X9pNgfZfINUHG8"
+        },
+        {
+          "active": true,
+          "created_at": "2025-08-23T05:50:31.453614+00:00",
+          "key": "k_Lan4KXuMaKeP3E7r",
+          "secret": "s_svxGfvp3vBgm5c-YH1rA31MZRpafZQ2m"
+        },
+        {
+          "active": true,
+          "created_at": "2025-08-23T05:51:32.726335+00:00",
+          "key": "k_kgMV2bhaSio6SzK-",
+          "secret": "s_nujy3uhnz0Uq4-6IDJKIxy1Shre5amad"
+        }
+      ],
+      "audit": {
+        "forward_exports": false,
+        "forward_receipts": false,
+        "sink_config": {},
+        "sink_type": null
+      },
+      "created_at": "2025-08-23T05:47:55.930817+00:00",
+      "name": "tamper",
+      "rate_limit_rpm": 0,
+      "status": "active"
+    }
+  }
+}

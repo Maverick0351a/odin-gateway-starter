@@ -1,0 +1,49 @@
+{% extends 'base.html' %}
+{% block content %}
+<h2>Hosted Verify</h2>
+<section class="card">
+  <h3>Verify by Trace ID</h3>
+  <form id="traceForm" onsubmit="event.preventDefault(); runTrace();">
+    <label>Gateway URL <input type="text" id="gw" value="{{ gateway_url or '' }}" placeholder="http://127.0.0.1:8080" /></label>
+    <label>Trace ID <input type="text" id="trace" placeholder="trace-id" /></label>
+    <button type="submit">Verify</button>
+  </form>
+  <pre id="traceResult" class="code" style="display:none"></pre>
+</section>
+<section class="card">
+  <h3>Upload Bundle JSON</h3>
+  <form id="bundleForm" onsubmit="event.preventDefault(); uploadBundle();">
+    <label>Bundle File <input type="file" id="bundleFile" accept="application/json" /></label>
+    <label>Gateway URL (optional for signature) <input type="text" id="gw2" placeholder="http://127.0.0.1:8080" /></label>
+    <label>KID (optional) <input type="text" id="kid" placeholder="gateway kid" /></label>
+    <button type="submit">Verify Uploaded Bundle</button>
+  </form>
+  <pre id="uploadResult" class="code" style="display:none"></pre>
+</section>
+<script>
+async function runTrace(){
+  const gw=document.getElementById('gw').value.replace(/\/$/,'');
+  const trace=document.getElementById('trace').value.trim();
+  if(!trace) return;
+  const res=await fetch(`/verify/${trace}?gateway_url=${encodeURIComponent(gw)}`);
+  const j=await res.json();
+  const pre=document.getElementById('traceResult');
+  pre.style.display='block';
+  pre.textContent=JSON.stringify(j,null,2);
+}
+async function uploadBundle(){
+  const f=document.getElementById('bundleFile').files[0];
+  if(!f) return;
+  const fd=new FormData();
+  fd.append('file', f);
+  const gw=document.getElementById('gw2').value;
+  const kid=document.getElementById('kid').value;
+  const qs=[]; if(gw) qs.push('gateway_url='+encodeURIComponent(gw)); if(kid) qs.push('kid='+encodeURIComponent(kid));
+  const res=await fetch('/verify/bundle'+(qs.length?'?'+qs.join('&'):''), {method:'POST', body: fd});
+  const j=await res.json();
+  const pre=document.getElementById('uploadResult');
+  pre.style.display='block';
+  pre.textContent=JSON.stringify(j,null,2);
+}
+</script>
+{% endblock %}
