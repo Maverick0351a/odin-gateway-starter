@@ -1,7 +1,13 @@
-import argparse, json, base64, hashlib, sys
+import argparse
+import base64
+import hashlib
+import json
+import sys
+
 import requests
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
 
 def b64u(b: bytes) -> str:
     return base64.urlsafe_b64encode(b).rstrip(b"=").decode("ascii")
@@ -46,7 +52,7 @@ def main():
     )
     new_priv_b64 = b64u(priv_raw)
     new_kid = kid_from_pub(pub_raw)
-    new_pub_jwk = {"kty": "OKP", "crv": "Ed25519", "x": b64u(pub_raw), "kid": new_kid}
+    # new_pub_jwk intentionally omitted from output (derived from priv + kid)
 
     legacy = dict(cur)
     legacy["status"] = "legacy"
@@ -60,7 +66,8 @@ def main():
     print(json.dumps(addl, indent=2))
 
     print("\n--- PowerShell rotation plan ---")
-    print(f"$env:ODIN_ADDITIONAL_PUBLIC_JWKS = '{json.dumps(addl).replace("'", "''")}'")
+    addl_ps = json.dumps(addl).replace("'", "''")  # escape single quotes for PowerShell
+    print(f"$env:ODIN_ADDITIONAL_PUBLIC_JWKS = '{addl_ps}'")
     print("# Restart gateway to publish legacy + current")
     print(f"$env:ODIN_GATEWAY_PRIVATE_KEY_B64 = '{new_priv_b64}'")
     print(f"$env:ODIN_GATEWAY_KID = '{new_kid}'")

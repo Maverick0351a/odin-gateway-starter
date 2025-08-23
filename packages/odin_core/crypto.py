@@ -1,7 +1,10 @@
-import base64, hashlib
-from typing import Tuple, Optional, Dict
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
+import base64
+import hashlib
+from typing import Dict, Optional, Tuple
+
 from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
+
 
 def b64u_encode(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b'=').decode('ascii')
@@ -32,8 +35,9 @@ def public_jwk_from_private_b64(priv_b64: str, kid: Optional[str]=None) -> Dict:
     priv = Ed25519PrivateKey.from_private_bytes(raw)
     pub = priv.public_key()
     pub_raw = pub.public_bytes(encoding=serialization.Encoding.Raw, format=serialization.PublicFormat.Raw)
-    jwk = { "kty": "OKP", "crv": "Ed25519", "x": b64u_encode(pub_raw) }
-    if kid: jwk["kid"] = kid
+    jwk = {"kty": "OKP", "crv": "Ed25519", "x": b64u_encode(pub_raw)}
+    if kid:
+        jwk["kid"] = kid
     return jwk
 
 def sign_bytes(priv: Ed25519PrivateKey, message: bytes) -> str:

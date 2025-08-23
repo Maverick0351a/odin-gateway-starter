@@ -1,5 +1,11 @@
-from typing import Dict, Any, List, Optional
-import os, json, pathlib, time, logging, random
+import json
+import logging
+import os
+import pathlib
+import random
+import time
+from typing import Any, Dict, List, Optional
+
 try:
     from google.cloud import firestore
 except Exception:
@@ -46,7 +52,7 @@ class ReceiptStore:
         self._firestore_ttl_days = _get_int("FIRESTORE_TTL_DAYS", 0)
 
     # ---------------- Retention (local mode) ----------------
-    def _prune_local(self):
+    def _prune_local(self):  # noqa: C901 (retention logic compact but over threshold)
         if self._client:
             return  # Firestore pruning not implemented
         if self._retention_max_lines <= 0 and self._retention_max_age_sec <= 0:
@@ -59,7 +65,8 @@ class ReceiptStore:
             lines = raw_lines
             # Age filtering
             if self._retention_max_age_sec > 0:
-                import json, datetime
+                import datetime
+                import json
                 cutoff = datetime.datetime.now(datetime.timezone.utc).timestamp() - self._retention_max_age_sec
                 kept = []
                 for ln in lines:
@@ -102,17 +109,17 @@ class ReceiptStore:
                     raise
                 time.sleep(base_delay * (2 ** i) + random.random() * 0.05)
 
-    def add_receipt(self, receipt: Dict[str, Any]) -> int:
+    def add_receipt(self, receipt: Dict[str, Any]) -> int:  # noqa: C901 (transactional + fallback logic)
         trace_id = receipt.get("trace_id")
         if self._client:
             coll = self._client.collection(self.collection_name).document(trace_id).collection("hops")
             # Atomic hop: create placeholder doc with server timestamp then count existing docs once
-            base = self._client.collection(self.collection_name).document(trace_id)
+            base_ref = self._client.collection(self.collection_name).document(trace_id)
             try:
                 # Use a transaction to assign hop index
                 @firestore.transactional
-                def _tx(transaction, base_ref):
-                    snap = base_ref.get(transaction=transaction)
+                def _tx(transaction, base_ref_inner):
+                    snap = base_ref_inner.get(transaction=transaction)
                     meta = {}
                     if snap.exists:
                         meta = snap.to_dict() or {}
@@ -121,10 +128,10 @@ class ReceiptStore:
                         current = 0
                     hop_index = current
                     meta["count"] = current + 1
-                    transaction.set(base_ref, meta)
+                    transaction.set(base_ref_inner, meta)
                     return hop_index
                 transaction = self._client.transaction()
-                hop = self._retry(lambda: _tx(transaction, self._client.collection(self.collection_name).document(trace_id)))
+                hop = self._retry(lambda: _tx(transaction, base_ref))
                 receipt["hop"] = hop
                 self._retry(lambda: coll.document(f"{hop}").set(receipt))
                 self._last_write_ts = receipt.get("ts") or receipt.get("created_at")

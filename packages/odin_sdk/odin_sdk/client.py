@@ -1,8 +1,13 @@
-import json, hashlib, base64, datetime, uuid
+import base64
+import datetime
+import hashlib
+import json
+import uuid
 from typing import Any, Dict, Optional, Tuple
+
 import httpx
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 
 __all__ = ["OPEClient", "b64u", "cid_sha256", "canonical_json"]
 
@@ -90,7 +95,8 @@ class OPEClient:
         key = None
         for k in jwks.get("keys", []):
             if k.get("kid") == kid:
-                key = k; break
+                key = k
+                break
         if key is None:
             raise VerificationError("Gateway key not found in JWKS")
         if key.get("kty") != "OKP" or key.get("crv") != "Ed25519":

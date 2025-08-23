@@ -1,11 +1,15 @@
-import os, json, hashlib, base64
-from typing import Optional, Any, Dict
-from fastapi import FastAPI, Request, HTTPException, UploadFile, File
+import base64
+import hashlib
+import json
+import os
+from typing import Any, Dict, Optional
+
+import httpx
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-import httpx
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 HOSTED_VERIFY_BASE_URL = os.getenv("HOSTED_VERIFY_BASE_URL")  # optional external canonical URL
 app = FastAPI(title="ODIN Dashboard", version="0.2.0")
@@ -14,18 +18,20 @@ templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
 app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
 
 def b64u_decode(s: str) -> bytes:
-    s = s.strip(); pad = "=" * (-len(s) % 4); return base64.urlsafe_b64decode(s + pad)
+    s = s.strip()
+    pad = "=" * (-len(s) % 4)
+    return base64.urlsafe_b64decode(s + pad)
 
 def canonical(obj) -> bytes:
     import json as _json
     return _json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
 
 def sha256_hex(b: bytes) -> str:
-    import hashlib
     return hashlib.sha256(b).hexdigest()
 
 def compute_receipt_hash(receipt: dict) -> str:
-    r = dict(receipt); r.pop("receipt_signature", None)
+    r = dict(receipt)
+    r.pop("receipt_signature", None)
     return sha256_hex(canonical(r))
 
 def verify_sig_with_jwk(jwk: dict, message: bytes, sig_b64u: str) -> bool:
@@ -89,9 +95,11 @@ async def view_export(trace_id: str, request: Request, gateway_url: Optional[str
     prev = None
     for i, rcp in enumerate(chain):
         if compute_receipt_hash(rcp) != rcp.get("receipt_hash"):
-            chain_ok = False; break
-        if i>0 and rcp.get("prev_receipt_hash") != prev.get("receipt_hash"):
-            chain_ok = False; break
+            chain_ok = False
+            break
+        if i > 0 and rcp.get("prev_receipt_hash") != prev.get("receipt_hash"):
+            chain_ok = False
+            break
         prev = rcp
     # Bundle CID (canonical deterministic ordering)
     canonical_bytes = canonical(bundle)
@@ -103,7 +111,7 @@ async def view_export(trace_id: str, request: Request, gateway_url: Optional[str
     sig = headers.get("x-odin-bundle-signature") or headers.get("x-odin-signature")
     kid = headers.get("x-odin-kid")
     sig_ok = False
-    sig_error = None
+    # sig_error retained earlier only for debugging; remove assignment to satisfy lint
     verified_format = None
     attempted_formats = []
     if sig and kid:
@@ -123,8 +131,8 @@ async def view_export(trace_id: str, request: Request, gateway_url: Optional[str
                         sig_ok = True
                         verified_format = label
                         break
-        except Exception as e:
-            sig_error = str(e)
+        except Exception:
+            pass
     status = {
         "chain_ok": chain_ok,
         "cid_match": cid_ok,
@@ -151,12 +159,15 @@ def _verify_bundle(bundle: dict, kid: Optional[str], jwk: Optional[dict], trace_
     prev = None
     for i, r in enumerate(receipts):
         if compute_receipt_hash(r) != r.get("receipt_hash"):
-            chain_ok = False; break
+            chain_ok = False
+            break
         if i and r.get("prev_receipt_hash") != prev.get("receipt_hash"):
-            chain_ok = False; break
+            chain_ok = False
+            break
         # hop ordering check (defensive; hop may be int index)
         if r.get("hop") != i:
-            chain_ok = False; break
+            chain_ok = False
+            break
         prev = r
     # CID over full bundle (excluding no fields; spec v1 uses entire bundle w/out signature field)
     canonical_bytes = canonical(bundle)

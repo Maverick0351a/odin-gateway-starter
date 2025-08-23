@@ -14,15 +14,20 @@ Exit codes:
   0 success, 1 failure(s), 2 internal error
 """
 from __future__ import annotations
-import sys, json, argparse, pathlib, os, traceback
-from typing import List
+
+import argparse
+import json
+import pathlib
 import sys
+import traceback
+from typing import List
+
 # Ensure local packages directory is on path when executed without editable install
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 PKG_DIR = ROOT / 'packages'
 if str(PKG_DIR) not in sys.path:
     sys.path.insert(0, str(PKG_DIR))
-from odin_core import transform_payload, cid_sha256, canonical_json  # type: ignore
+from odin_core import canonical_json, cid_sha256, transform_payload  # type: ignore  # noqa: E402
 
 VECTORS_DIR = pathlib.Path(__file__).parent / 'vectors'
 
@@ -33,7 +38,8 @@ def run_offline(vector_path: pathlib.Path) -> tuple[bool,str]:
     data = json.loads(vector_path.read_text())
     inp = data['input']
     payload = inp['payload']
-    pt = inp['payload_type']; tt = inp['target_type']
+    pt = inp['payload_type']
+    tt = inp['target_type']
     out, meta = transform_payload(payload, pt, tt)
     if data['expected'].get('target_type') and tt != data['expected']['target_type']:
         return False, 'target_type mismatch'
@@ -44,7 +50,7 @@ def run_offline(vector_path: pathlib.Path) -> tuple[bool,str]:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--mode', choices=['offline','gateway'], default='offline')
-    args = ap.parse_args()
+    ap.parse_args()  # mode not yet used (gateway mode forthcoming)
     failures = []
     for vec in load_vectors():
         try:

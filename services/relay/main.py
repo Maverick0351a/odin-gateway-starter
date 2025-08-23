@@ -1,18 +1,22 @@
-import os, json, logging, ipaddress, asyncio
-from typing import Optional, Dict, Any
-from fastapi import FastAPI, HTTPException, Response
-from fastapi.responses import JSONResponse
-from fastapi.encoders import jsonable_encoder
-from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST, CollectorRegistry
+import asyncio
+import ipaddress
+import json
+import logging
+import os
+import pathlib
+import sys
 import time
-import httpx
+from typing import Any, Dict, Optional
 
-import sys, pathlib
+import httpx
+from fastapi import FastAPI, HTTPException, Response
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse
+from prometheus_client import CONTENT_TYPE_LATEST, CollectorRegistry, Counter, Histogram, generate_latest
+
 sys.path.append(str(pathlib.Path(__file__).resolve().parents[2] / "packages"))
-from odin_core import (
-    PolicyEngine, cid_sha256, now_ts_iso, b64u_encode
-)
-from odin_core.signer import load_signer
+from odin_core import PolicyEngine, cid_sha256, now_ts_iso  # noqa: E402
+from odin_core.signer import load_signer  # noqa: E402
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("odin.relay")
@@ -48,7 +52,8 @@ async def _resolve_block_private(host: str):
     except Exception:
         raise HTTPException(400, detail=f"DNS resolve failed for {host}")
 
-from pydantic import BaseModel
+from pydantic import BaseModel  # noqa: E402
+
 
 class RelayRequest(BaseModel):
     trace_id: str

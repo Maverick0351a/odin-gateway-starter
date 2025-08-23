@@ -9,11 +9,20 @@ Polished UX:
 - Export verify supports --include-bundle & returns verification flags
 """
 
-import argparse, json, sys, os, uuid, traceback, base64, textwrap
-from typing import Any, Optional, Tuple
-from .client import OPEClient, canonical_json, cid_sha256
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+import argparse
+import base64
+import json
+import os
+import sys
+import textwrap
+import traceback
+import uuid
+from typing import Any, Optional
+
 from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+from .client import OPEClient, canonical_json, cid_sha256
 
 EXIT_OK = 0
 EXIT_USER = 1
@@ -57,7 +66,8 @@ def cmd_keygen(args):
     jwk = {"kty":"OKP","crv":"Ed25519","x": base64.urlsafe_b64encode(pub).decode().rstrip('='),"kid": kid}
     out = {"private_key_b64": seed, "kid": kid, "jwk": jwk}
     if args.json:
-        print(json.dumps(out, indent=2)); return
+        print(json.dumps(out, indent=2))
+        return
     print(json.dumps(out, indent=2))
 
 def cmd_sign(args):
@@ -108,7 +118,7 @@ def cmd_chain(args):
     else:
         print(json.dumps(chain, indent=2))
 
-def _verify_export_bundle(bundle_resp: dict, jwks_resp: dict):
+def _verify_export_bundle(bundle_resp: dict, jwks_resp: dict):  # noqa: C901
     # Minimal verification echoing scripts/verify_export.py core logic
     headers = bundle_resp.get("_headers", {})
     body = bundle_resp["body"]
@@ -117,7 +127,8 @@ def _verify_export_bundle(bundle_resp: dict, jwks_resp: dict):
         raise SystemExit("No chain/hops in export bundle")
     # Hash linkage
     for i, r in enumerate(chain):
-        r_copy = dict(r); r_copy.pop("receipt_signature", None)
+        r_copy = dict(r)
+        r_copy.pop("receipt_signature", None)
         import hashlib
         local_hash = hashlib.sha256(canonical_json(r_copy)).hexdigest()
         if local_hash != r.get("receipt_hash"):
@@ -137,11 +148,12 @@ def _verify_export_bundle(bundle_resp: dict, jwks_resp: dict):
         keys = jwks_resp.get("keys", [])
         key = next((k for k in keys if k.get("kid") == kid), None)
         if key:
-            from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
-            from cryptography.exceptions import InvalidSignature
-            pad = "=" * (-len(sig) % 4)
-            import base64
-            def b64u_dec(s): return base64.urlsafe_b64decode(s + ("=" * (-len(s) % 4)))
+            from cryptography.exceptions import InvalidSignature  # noqa: I001
+            from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey  # noqa: I001
+            import base64  # noqa: I001
+
+            def b64u_dec(s: str):  # local helper
+                return base64.urlsafe_b64decode(s + ("=" * (-len(s) % 4)))
             pk = Ed25519PublicKey.from_public_bytes(b64u_dec(key["x"]))
             # Try message formats
             trace = body.get("trace_id") or headers.get("x-odin-trace-id")

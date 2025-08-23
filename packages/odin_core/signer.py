@@ -6,11 +6,14 @@ interface so the gateway code paths can be refactored without behavior
 change.
 """
 from __future__ import annotations
-from typing import Protocol, Dict, Any, Optional
+
 import os
-from .crypto import b64u_encode, b64u_decode
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from typing import Any, Dict, Optional, Protocol
+
 from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+from .crypto import b64u_decode, b64u_encode
 
 
 class Signer(Protocol):
@@ -72,7 +75,7 @@ class GCPKMSSigner:
         # Fetch public key
         pk = self._client.get_public_key(request={"name": key_name})
         # KMS returns PEM; extract raw from base64 inside header/footer for Ed25519 SubjectPublicKeyInfo
-        import base64, re
+        import base64
         pem = pk.pem.encode()
         b64 = b"".join(line.strip() for line in pem.splitlines() if b"BEGIN" not in line and b"END" not in line)
         der = base64.b64decode(b64)
@@ -94,10 +97,8 @@ class GCPKMSSigner:
         return {"kty": "OKP", "crv": "Ed25519", "x": b64u_encode(self._raw_pub), "kid": self._kid}
 
     def sign(self, message: bytes) -> str:
-        from google.cloud import kms_v1
         from .crypto import b64u_encode as _b64
-        digest = {"ed25519": message}  # Raw message for Ed25519 per API (no pre-hash)
-        # However google-cloud-kms python library expects 'data' not digest for ED25519 (using asymmetric_sign with data)
+    # Google Cloud KMS ED25519: sign raw message via asymmetric_sign (no pre-hash)
         req = {"name": self._key_name, "data": message}
         resp = self._client.asymmetric_sign(request=req)
         return _b64(resp.signature)
@@ -133,7 +134,9 @@ def load_signer() -> Signer:
 class AWSKMSSigner:
     """Ed25519 signer using AWS KMS (requires a key with KEY_SPEC=ECC_ED25519 and SIGN_VERIFY)."""
     def __init__(self, key_id: str):
-        import boto3, hashlib, base64
+        import hashlib
+
+        import boto3
         self._client = boto3.client("kms")
         self._key_id = key_id
         desc = self._client.describe_key(KeyId=key_id)["KeyMetadata"]
@@ -161,10 +164,11 @@ class AWSKMSSigner:
 class AzureKVSigner:
     """Ed25519 signer using Azure Key Vault (requires an Ed25519 key in vault)."""
     def __init__(self, key_id: str):
+        from urllib.parse import urlparse
+
         from azure.identity import DefaultAzureCredential
         from azure.keyvault.keys import KeyClient
-        from azure.keyvault.keys.crypto import CryptographyClient, SignatureAlgorithm
-        from urllib.parse import urlparse
+        from azure.keyvault.keys.crypto import CryptographyClient
         self._key_id = key_id
         cred = DefaultAzureCredential()
         # Derive vault URL from key id
@@ -205,6 +209,7 @@ class AzureKVSigner:
 
     def sign(self, message: bytes) -> str:
         from azure.keyvault.keys.crypto import SignatureAlgorithm
+
         from .crypto import b64u_encode as _b64
         resp = self._crypto.sign(SignatureAlgorithm.ED25519, message)
         return _b64(resp.signature)
