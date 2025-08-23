@@ -52,49 +52,52 @@ class ReceiptStore:
         self._firestore_ttl_days = _get_int("FIRESTORE_TTL_DAYS", 0)
 
     # ---------------- Retention (local mode) ----------------
-    def _prune_local(self):  # noqa: C901 (retention logic compact but over threshold)
+    def _prune_local(self):
+        """Apply age and line-count retention to the local JSONL file.
+
+        Broken into helper steps to keep complexity low. Firestore mode returns immediately.
+        """
         if self._client:
-            return  # Firestore pruning not implemented
+            return
         if self._retention_max_lines <= 0 and self._retention_max_age_sec <= 0:
             return
+        if not self._local_path.exists():
+            return
         try:
-            if not self._local_path.exists():
-                return
-            raw_lines = self._local_path.read_text(encoding='utf-8').splitlines()
-            # Preserve chronological order as written
-            lines = raw_lines
-            # Age filtering
-            if self._retention_max_age_sec > 0:
-                import datetime
-                import json
-                cutoff = datetime.datetime.now(datetime.timezone.utc).timestamp() - self._retention_max_age_sec
-                kept = []
-                for ln in lines:
-                    try:
-                        doc = json.loads(ln)
-                        ts_raw = doc.get('ts') or doc.get('created_at')
-                        if not ts_raw:
-                            continue
-                        try:
-                            dt = datetime.datetime.fromisoformat(ts_raw)
-                            if dt.tzinfo is None:
-                                dt = dt.replace(tzinfo=datetime.timezone.utc)
-                            if dt.timestamp() >= cutoff:
-                                kept.append(ln)
-                        except Exception:
-                            continue
-                    except Exception:
-                        continue
-                lines = kept
-            # Line count pruning (keep newest)
-            if self._retention_max_lines > 0 and len(lines) > self._retention_max_lines:
-                # Keep newest by original order
-                lines = lines[-self._retention_max_lines:]
+            lines = self._local_path.read_text(encoding='utf-8').splitlines()
+            lines = self._filter_age(lines)
+            lines = self._enforce_line_cap(lines)
             tmp = self._local_path.with_suffix('.tmp')
             tmp.write_text("\n".join(lines) + ("\n" if lines else ""), encoding='utf-8')
             tmp.replace(self._local_path)
-        except Exception as e:
+        except Exception as e:  # pragma: no cover - defensive
             logger.warning(f"Retention prune failed: {e}")
+
+    def _filter_age(self, lines: List[str]) -> List[str]:
+        if self._retention_max_age_sec <= 0:
+            return lines
+        import datetime, json
+        cutoff = datetime.datetime.now(datetime.timezone.utc).timestamp() - self._retention_max_age_sec
+        kept: List[str] = []
+        for ln in lines:
+            try:
+                doc = json.loads(ln)
+                ts_raw = doc.get('ts') or doc.get('created_at')
+                if not ts_raw:
+                    continue
+                dt = datetime.datetime.fromisoformat(ts_raw)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=datetime.timezone.utc)
+                if dt.timestamp() >= cutoff:
+                    kept.append(ln)
+            except Exception:
+                continue
+        return kept
+
+    def _enforce_line_cap(self, lines: List[str]) -> List[str]:
+        if self._retention_max_lines > 0 and len(lines) > self._retention_max_lines:
+            return lines[-self._retention_max_lines:]
+        return lines
     def _write_local(self, doc: Dict[str, Any]):
         self._local_path.parent.mkdir(parents=True, exist_ok=True)
         with self._local_path.open("a", encoding="utf-8") as f:
@@ -109,71 +112,75 @@ class ReceiptStore:
                     raise
                 time.sleep(base_delay * (2 ** i) + random.random() * 0.05)
 
-    def add_receipt(self, receipt: Dict[str, Any]) -> int:  # noqa: C901 (transactional + fallback logic)
+    def add_receipt(self, receipt: Dict[str, Any]) -> int:
+        """Add a receipt to Firestore or local store, returning assigned hop index."""
         trace_id = receipt.get("trace_id")
         if self._client:
-            coll = self._client.collection(self.collection_name).document(trace_id).collection("hops")
-            # Atomic hop: create placeholder doc with server timestamp then count existing docs once
-            base_ref = self._client.collection(self.collection_name).document(trace_id)
-            try:
-                # Use a transaction to assign hop index
-                @firestore.transactional
-                def _tx(transaction, base_ref_inner):
-                    snap = base_ref_inner.get(transaction=transaction)
-                    meta = {}
-                    if snap.exists:
-                        meta = snap.to_dict() or {}
-                        current = int(meta.get("count", 0))
-                    else:
-                        current = 0
-                    hop_index = current
-                    meta["count"] = current + 1
-                    transaction.set(base_ref_inner, meta)
-                    return hop_index
-                transaction = self._client.transaction()
-                hop = self._retry(lambda: _tx(transaction, base_ref))
-                receipt["hop"] = hop
-                self._retry(lambda: coll.document(f"{hop}").set(receipt))
-                self._last_write_ts = receipt.get("ts") or receipt.get("created_at")
-                return hop
-            except Exception as e:
-                logger.warning(f"Firestore hop transaction failed, fallback to query method: {e}")
-                try:
-                    snap = coll.stream()
-                    hop = sum(1 for _ in snap)
-                except Exception:
-                    hop = 0
-                receipt["hop"] = hop
-                try:
-                    coll.document(f"{hop}").set(receipt)
-                    self._last_write_ts = receipt.get("ts") or receipt.get("created_at")
-                except Exception as ee:
-                    self._last_error = str(ee)
-                return hop
-        else:
-            # Prune first so hop assignment only considers retained entries
-            self._prune_local()
-            hop = 0
-            if self._local_path.exists():
-                try:
-                    with self._local_path.open('r', encoding='utf-8') as f:
-                        for line in f:
-                            try:
-                                doc = json.loads(line)
-                            except Exception:
-                                continue
-                            if doc.get('trace_id') == trace_id:
-                                h = doc.get('hop')
-                                if isinstance(h, int) and h >= hop:
-                                    hop = h + 1
-                except Exception:
-                    hop = 0
+            return self._add_firestore(trace_id, receipt)
+        return self._add_local(trace_id, receipt)
+
+    # --- Firestore helpers ---
+    def _add_firestore(self, trace_id: str, receipt: Dict[str, Any]) -> int:
+        coll = self._client.collection(self.collection_name).document(trace_id).collection("hops")  # type: ignore
+        base_ref = self._client.collection(self.collection_name).document(trace_id)  # type: ignore
+        try:
+            @firestore.transactional  # type: ignore
+            def _tx(transaction, base_ref_inner):  # type: ignore
+                snap = base_ref_inner.get(transaction=transaction)
+                meta = snap.to_dict() if snap.exists else {}
+                current = int(meta.get("count", 0))
+                meta["count"] = current + 1
+                transaction.set(base_ref_inner, meta)
+                return current
+            transaction = self._client.transaction()  # type: ignore
+            hop = self._retry(lambda: _tx(transaction, base_ref))
             receipt["hop"] = hop
-            self._write_local(receipt)
+            self._retry(lambda: coll.document(f"{hop}").set(receipt))  # type: ignore
             self._last_write_ts = receipt.get("ts") or receipt.get("created_at")
-            # Final prune to enforce line count if needed
-            self._prune_local()
             return hop
+        except Exception as e:  # pragma: no cover - rare fallback
+            logger.warning(f"Firestore hop transaction failed, fallback to query method: {e}")
+            try:
+                snap = coll.stream()  # type: ignore
+                hop = sum(1 for _ in snap)
+            except Exception:
+                hop = 0
+            receipt["hop"] = hop
+            try:
+                coll.document(f"{hop}").set(receipt)  # type: ignore
+                self._last_write_ts = receipt.get("ts") or receipt.get("created_at")
+            except Exception as ee:
+                self._last_error = str(ee)
+            return hop
+
+    # --- Local helpers ---
+    def _add_local(self, trace_id: str, receipt: Dict[str, Any]) -> int:
+        self._prune_local()  # prune first for accurate hop assignment when lines capped
+        hop = self._next_local_hop(trace_id)
+        receipt["hop"] = hop
+        self._write_local(receipt)
+        self._last_write_ts = receipt.get("ts") or receipt.get("created_at")
+        self._prune_local()  # enforce final caps
+        return hop
+
+    def _next_local_hop(self, trace_id: str) -> int:
+        if not self._local_path.exists():
+            return 0
+        hop = 0
+        try:
+            with self._local_path.open('r', encoding='utf-8') as f:
+                for line in f:
+                    try:
+                        doc = json.loads(line)
+                    except Exception:
+                        continue
+                    if doc.get('trace_id') == trace_id:
+                        h = doc.get('hop')
+                        if isinstance(h, int) and h >= hop:
+                            hop = h + 1
+        except Exception:
+            hop = 0
+        return hop
     def get_chain(self, trace_id: str) -> List[Dict[str, Any]]:
         results: List[Dict[str, Any]] = []
         if self._client:
