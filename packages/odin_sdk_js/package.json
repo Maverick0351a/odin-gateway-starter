@@ -1,11 +1,13 @@
 {
   "name": "odin-sdk-js",
-  "version": "0.1.0",
+  "version": "0.1.1-beta.0",
   "description": "ODIN Node/TypeScript SDK (OPE sign/send/verify, receipts, exports)",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "bin": { "odin": "bin/odin.js" },
+  "bin": {
+    "odin": "bin/odin.js"
+  },
   "scripts": {
     "build": "tsc -p .",
     "lint": "echo 'no lint configured'",
