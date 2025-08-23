@@ -1,6 +1,7 @@
 # ODIN Secure AI to AI Utility Stack
 
 [![CI](https://github.com/Maverick0351a/odin-gateway-starter/actions/workflows/ci.yml/badge.svg)](https://github.com/Maverick0351a/odin-gateway-starter/actions/workflows/ci.yml)
+[![Coverage](https://img.shields.io/badge/coverage-auto--generated-lightgrey)](#tests--ci)
 [![PyPI](https://img.shields.io/pypi/v/odin-sdk.svg)](https://pypi.org/project/odin-sdk/)
 [![npm (next)](https://img.shields.io/npm/v/@maverick0351a/odin-sdk-js/next.svg)](https://www.npmjs.com/package/@maverick0351a/odin-sdk-js)
 [![License](https://img.shields.io/badge/license-Apache--2.0-lightgrey)](LICENSE)

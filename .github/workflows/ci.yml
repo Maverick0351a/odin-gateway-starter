@@ -51,7 +51,12 @@ jobs:
       - name: Run tests
         env:
           PYTEST_ADDOPTS: -ra --maxfail=1
-        run: pytest -q -W error::DeprecationWarning -W ignore::UserWarning
+        run: pytest -q --cov=packages/odin_core --cov=services/gateway --cov-report=term-missing:skip-covered --cov-report=xml -W error::DeprecationWarning -W ignore::UserWarning
+      - name: Upload coverage XML
+        uses: actions/upload-artifact@v4
+        with:
+            name: coverage-${{ matrix.python-version }}
+            path: coverage.xml
       - name: Lint (ruff)
         run: ruff check . --output-format=github
       - name: Type check (mypy)
