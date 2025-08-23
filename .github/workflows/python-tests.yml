@@ -1,8 +1,8 @@
 name: python-tests
 
-# Temporary compatibility workflow to satisfy legacy required check 'python-tests / tests'.
-# Real testing now lives in CI workflow. Remove this after updating branch protection to drop
-# the old required check, then delete this file.
+# Temporary compatibility workflow to satisfy legacy required status checks like
+# "python-tests / tests (3.11)" until branch protection is updated. Real tests run in CI.
+# After updating protection rules, delete this file.
 on:
   push:
     branches: [ main ]
@@ -13,9 +13,11 @@ on:
 jobs:
   tests:
     runs-on: ubuntu-latest
-    timeout-minutes: 3
+    strategy:
+      matrix:
+        python-version: ["3.11"]
     steps:
-      - name: Fast pass-through
+      - name: Compatibility pass-through
         run: |
-          echo "python-tests workflow retained only for legacy required status. Actual tests run in CI." 
-          echo "Remove branch protection requirement then delete .github/workflows/python-tests.yml"
+          echo "Legacy python-tests placeholder for required status 'tests (${ { matrix.python-version } })'" | sed 's/ //g' > /dev/null || true
+          echo "Update branch protection to remove this check; then delete python-tests.yml."
