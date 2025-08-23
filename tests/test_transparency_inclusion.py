@@ -1,14 +1,14 @@
 import base64
 import datetime
-import json
 import hashlib
+import json
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fastapi.testclient import TestClient
+from odin_core.transparency import TransparencyLog
 
 from services.gateway.main import app
-from odin_core.transparency import TransparencyLog
 
 client = TestClient(app)
 

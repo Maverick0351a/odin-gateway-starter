@@ -20,7 +20,7 @@ import uuid
 from typing import Any, Optional
 
 from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 
 from .client import OPEClient, canonical_json, cid_sha256
 
@@ -157,9 +157,7 @@ def _verify_signature(headers, body, chain, jwks_resp, resp_cid_hdr: Optional[st
     key = next((k for k in keys if k.get("kid") == kid), None)
     if not key:
         return
-    from cryptography.exceptions import InvalidSignature
-    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
-    import base64
+    # imports already at module top (kept here previously for local scope; now centralized)
 
     def b64u_dec(s: str):
         return base64.urlsafe_b64decode(s + ("=" * (-len(s) % 4)))

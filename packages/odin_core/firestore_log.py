@@ -76,7 +76,8 @@ class ReceiptStore:
     def _filter_age(self, lines: List[str]) -> List[str]:
         if self._retention_max_age_sec <= 0:
             return lines
-        import datetime, json
+        import datetime
+        import json
         cutoff = datetime.datetime.now(datetime.timezone.utc).timestamp() - self._retention_max_age_sec
         kept: List[str] = []
         for ln in lines:
