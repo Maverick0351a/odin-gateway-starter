@@ -74,6 +74,7 @@ Export endpoint: `/v1/receipts/export/{trace_id}` returns a signed bundle; clien
 | Var | Purpose | Example / Notes |
 |-----|---------|-----------------|
 | `ODIN_SIGNER_BACKEND` | Signer backend selector (`file`) | `file` (default) – future: `gcpkms`, `awskms`, `azurekv` |
+| `ODIN_GCP_KMS_KEY` | Full resource name of Ed25519 KMS key version (gcpkms backend) | `projects/<p>/locations/<l>/keyRings/<r>/cryptoKeys/<k>/cryptoKeyVersions/1` |
 | `ODIN_GATEWAY_PRIVATE_KEY_B64` | Base64url Ed25519 32‑byte seed for gateway signing (file backend) | Generated via `scripts/gen_keys.py` |
 | `ODIN_GATEWAY_KID` | Key ID exposed in JWKS and headers (can be auto‑derived) | Any unique string (e.g. `gw-2025-01`) |
 | `ODIN_ADDITIONAL_PUBLIC_JWKS` | JSON string of legacy/extra JWKs for verification | `{"keys":[...]}` |
@@ -638,6 +639,7 @@ node bin/odin.js send --gateway http://127.0.0.1:8080 \
 
 ## Security Notes
 * Keys: Gateway Ed25519 private key (seed) is a 32‑byte secret; store outside repo (env / secret manager). Rotate by issuing a new `KID` and keeping the old public key in `ODIN_ADDITIONAL_PUBLIC_JWKS` during migration.
+* KMS: When using `ODIN_SIGNER_BACKEND=gcpkms`, the private key material never leaves Cloud KMS; only signatures are returned. Ensure the service account has `cloudkms.cryptoKeyVersions.useToSign`.
 * Signed Contexts: Envelopes sign `<cid>|<trace_id>|<ts>`; export bundles sign `<bundle_cid>|<trace_id>|<exported_at>` binding content + lineage + freshness.
 * Tamper Evidence: Receipts are hash‑linked (`prev_receipt_hash`); altering history breaks the chain.
 * Defense in Depth: Optional API key + HMAC (`X-ODIN-API-Key` / `X-ODIN-API-MAC`) mitigates spoofing and simple replay.

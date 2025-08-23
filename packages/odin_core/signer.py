@@ -1,0 +1,123 @@
+"""Signer abstraction for pluggable key custody backends.
+
+Phase 2 introduces external KMS / HSM support. This initial commit only
+implements the existing file/seed based Ed25519 signer behind a common
+interface so the gateway code paths can be refactored without behavior
+change.
+"""
+from __future__ import annotations
+from typing import Protocol, Dict, Any, Optional
+import os
+from .crypto import b64u_encode, b64u_decode
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives import serialization
+
+
+class Signer(Protocol):
+    def kid(self) -> str: ...
+    def public_jwk(self) -> Dict[str, Any]: ...
+    def sign(self, message: bytes) -> str: ...  # base64url
+
+
+class FileKeySigner:
+    """Ed25519 seed (32B) loaded from env or passed directly.
+
+    Env vars:
+      ODIN_GATEWAY_PRIVATE_KEY_B64 : base64url seed (no padding)
+      ODIN_GATEWAY_KID              : optional explicit kid override
+    """
+    def __init__(self, seed_b64: Optional[str] = None, kid: Optional[str] = None):
+        seed_b64 = seed_b64 or os.getenv("ODIN_GATEWAY_PRIVATE_KEY_B64")
+        if seed_b64:
+            raw = b64u_decode(seed_b64)
+            if len(raw) != 32:
+                raise ValueError("Ed25519 seed must be 32 bytes")
+            self._priv = Ed25519PrivateKey.from_private_bytes(raw)
+        else:
+            self._priv = Ed25519PrivateKey.generate()
+        self._pub = self._priv.public_key()
+        self._kid = kid or os.getenv("ODIN_GATEWAY_KID") or self._derive_kid()
+
+    def _derive_kid(self) -> str:
+        raw = self._pub.public_bytes(encoding=serialization.Encoding.Raw, format=serialization.PublicFormat.Raw)
+        import hashlib
+        return f"ed25519-{hashlib.sha256(raw).hexdigest()[:16]}"
+
+    def kid(self) -> str:
+        return self._kid
+
+    def public_jwk(self) -> Dict[str, Any]:
+        raw = self._pub.public_bytes(encoding=serialization.Encoding.Raw, format=serialization.PublicFormat.Raw)
+        return {"kty": "OKP", "crv": "Ed25519", "x": b64u_encode(raw), "kid": self._kid}
+
+    def sign(self, message: bytes) -> str:
+        from .crypto import b64u_encode as _b64
+        return _b64(self._priv.sign(message))
+
+
+class GCPKMSSigner:
+    """Ed25519 signer using Google Cloud KMS.
+
+    Env vars:
+      ODIN_GCP_KMS_KEY   : projects/<p>/locations/<l>/keyRings/<r>/cryptoKeys/<k>/cryptoKeyVersions/<v>
+      ODIN_GATEWAY_KID   : (optional) explicit kid; else derive from KMS public key
+
+    Notes:
+      - Requires service account with Cloud KMS sign permission.
+      - Ed25519 keys must be created in KMS (purpose: ASYMMETRIC_SIGN, algorithm: ED25519)."""
+    def __init__(self, key_name: str):
+        from google.cloud import kms_v1
+        self._client = kms_v1.KeyManagementServiceClient()
+        self._key_name = key_name
+        # Fetch public key
+        pk = self._client.get_public_key(request={"name": key_name})
+        # KMS returns PEM; extract raw from base64 inside header/footer for Ed25519 SubjectPublicKeyInfo
+        import base64, re
+        pem = pk.pem.encode()
+        b64 = b"".join(line.strip() for line in pem.splitlines() if b"BEGIN" not in line and b"END" not in line)
+        der = base64.b64decode(b64)
+        # Parse SubjectPublicKeyInfo to raw 32 bytes (simple ASN.1 slice for Ed25519)
+        # Ed25519 SPKI structure: SEQ { SEQ { OID 1.3.101.112 }, BIT STRING (raw key) }
+        # Crude parse: last 32 bytes are the raw key (safe for Ed25519 SPKI minimal form)
+        raw = der[-32:]
+        self._raw_pub = raw
+        self._kid = os.getenv("ODIN_GATEWAY_KID") or self._derive_kid()
+
+    def _derive_kid(self) -> str:
+        import hashlib
+        return f"kms-ed25519-{hashlib.sha256(self._raw_pub).hexdigest()[:16]}"
+
+    def kid(self) -> str:
+        return self._kid
+
+    def public_jwk(self) -> Dict[str, Any]:
+        return {"kty": "OKP", "crv": "Ed25519", "x": b64u_encode(self._raw_pub), "kid": self._kid}
+
+    def sign(self, message: bytes) -> str:
+        from google.cloud import kms_v1
+        from .crypto import b64u_encode as _b64
+        digest = {"ed25519": message}  # Raw message for Ed25519 per API (no pre-hash)
+        # However google-cloud-kms python library expects 'data' not digest for ED25519 (using asymmetric_sign with data)
+        req = {"name": self._key_name, "data": message}
+        resp = self._client.asymmetric_sign(request=req)
+        return _b64(resp.signature)
+
+
+def load_signer() -> Signer:
+    """Factory selecting signer backend via ODIN_SIGNER_BACKEND.
+
+    Backends:
+      file   – local seed (default)
+      gcpkms – Google Cloud KMS Ed25519 key (needs ODIN_GCP_KMS_KEY)
+    """
+    backend = os.getenv("ODIN_SIGNER_BACKEND", "file").lower()
+    if backend == "file":
+        return FileKeySigner()
+    if backend == "gcpkms":
+        key = os.getenv("ODIN_GCP_KMS_KEY")
+        if not key:
+            raise ValueError("ODIN_GCP_KMS_KEY required for gcpkms backend")
+        return GCPKMSSigner(key)
+    raise ValueError(f"Unsupported signer backend '{backend}'")
+
+__all__ = ["Signer", "FileKeySigner", "GCPKMSSigner", "load_signer"]
