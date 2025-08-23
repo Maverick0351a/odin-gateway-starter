@@ -12,9 +12,14 @@ from cryptography.hazmat.primitives import serialization
 import hmac, hashlib
 
 import sys, pathlib
-pkg_path = pathlib.Path(__file__).resolve().parents[2] / "packages"
-if str(pkg_path) not in sys.path:
-    sys.path.insert(0, str(pkg_path))
+# Robustly add any ancestor ./packages directory to sys.path for CI/import resilience
+for anc in pathlib.Path(__file__).resolve().parents:
+    cand = anc / 'packages'
+    if (cand / 'odin_core' / 'control.py').exists():
+        p = str(cand)
+        if p not in sys.path:
+            sys.path.insert(0, p)
+        break
 
 from odin_core import (
     load_or_create_private_key, sign_bytes, verify_with_jwk,
@@ -25,7 +30,15 @@ try:
     from odin_core.control import ControlPlane  # direct module import
 except Exception as _cp_err:  # noqa
     # Fallback: manual spec load if standard import failed for any reason
-    spec_dir = pkg_path / 'odin_core'
+    # Re-run ancestor scan (defensive)
+    spec_dir = None
+    for anc in pathlib.Path(__file__).resolve().parents:
+        cand = anc / 'packages' / 'odin_core'
+        if (cand / 'control.py').exists():
+            spec_dir = cand
+            break
+    if spec_dir is None:
+        raise ImportError(f"ControlPlane module not located via ancestor scan: {_cp_err}")
     ctrl_file = spec_dir / 'control.py'
     if ctrl_file.exists():
         import importlib.util
