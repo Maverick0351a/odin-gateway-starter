@@ -118,6 +118,39 @@ def load_signer() -> Signer:
         if not key:
             raise ValueError("ODIN_GCP_KMS_KEY required for gcpkms backend")
         return GCPKMSSigner(key)
+    if backend == "awskms":
+        key_id = os.getenv("ODIN_AWS_KMS_KEY_ID")
+        if not key_id:
+            raise ValueError("ODIN_AWS_KMS_KEY_ID required for awskms backend")
+        return AWSKMSSigner(key_id)
     raise ValueError(f"Unsupported signer backend '{backend}'")
 
-__all__ = ["Signer", "FileKeySigner", "GCPKMSSigner", "load_signer"]
+class AWSKMSSigner:
+    """Ed25519 signer using AWS KMS (requires a key with KEY_SPEC=ECC_ED25519 and SIGN_VERIFY)."""
+    def __init__(self, key_id: str):
+        import boto3, hashlib, base64
+        self._client = boto3.client("kms")
+        self._key_id = key_id
+        desc = self._client.describe_key(KeyId=key_id)["KeyMetadata"]
+        if desc.get("KeySpec") not in ("ECC_ED25519", "ED25519"):  # AWS uses ECC_ED25519
+            raise ValueError("AWS KMS key must be ED25519/ECC_ED25519")
+        pub = self._client.get_public_key(KeyId=key_id)
+        # AWS returns DER SubjectPublicKeyInfo in 'PublicKey'
+        der = pub["PublicKey"]
+        raw = der[-32:]  # Ed25519 raw public key at end
+        self._raw_pub = raw
+        self._kid = os.getenv("ODIN_GATEWAY_KID") or f"aws-ed25519-{hashlib.sha256(raw).hexdigest()[:16]}"
+
+    def kid(self) -> str:
+        return self._kid
+
+    def public_jwk(self) -> Dict[str, Any]:
+        return {"kty": "OKP", "crv": "Ed25519", "x": b64u_encode(self._raw_pub), "kid": self._kid}
+
+    def sign(self, message: bytes) -> str:
+        # For ED25519, KMS signs raw message; set SigningAlgorithm to EDDSA
+        from .crypto import b64u_encode as _b64
+        resp = self._client.sign(KeyId=self._key_id, Message=message, SigningAlgorithm="EDDSA", MessageType="RAW")
+        return _b64(resp["Signature"])
+
+__all__ = ["Signer", "FileKeySigner", "GCPKMSSigner", "AWSKMSSigner", "load_signer"]
