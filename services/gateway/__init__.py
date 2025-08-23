@@ -1,3 +1,4 @@
+"""Gateway service package."""
 """Gateway service package marker.
 
 Provides explicit package initialization so tests can reliably import

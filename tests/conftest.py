@@ -21,5 +21,5 @@ _ensure(ROOT)
 if PKG_DIR.exists():
     _ensure(PKG_DIR)
 
-# Optional: debug
+# Optional: quick debug hook (disabled by default)
 # print("[conftest] sys.path=", sys.path)

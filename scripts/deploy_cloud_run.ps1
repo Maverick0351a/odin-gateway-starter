@@ -1,136 +1,125 @@
-param(
-  [Parameter(Mandatory=$true)][string]$Project,
-  [string]$Region = "us-central1",
-  [string]$RepoLocation = "us",  # Artifact Registry location (multi-region 'us')
-  [string]$GatewayService = "odin-gateway",
-  [string]$DashboardService = "odin-dashboard",
-  [string]$GatewayRepo = "odin-gateway",
-  [string]$DashboardRepo = "odin-dashboard",
-  [switch]$Build
+Param(
+    [Parameter(Mandatory = $true)] [string]$Project,
+    [string]$Region = "us-central1",
+    [switch]$Build,
+    [string]$Repo = "odin",                   # Artifact Registry repo (Docker format)
+    [string]$GatewayService = "odin-gateway",
+    [string]$DashboardService = "odin-dashboard",
+    [string]$GatewayDockerfile = "Dockerfile.gateway",
+    [string]$DashboardDockerfile = "Dockerfile.dashboard",
+    [string]$GatewayPort = "8080",
+    [string]$DashboardPort = "8081",
+    [switch]$DeployDashboard
 )
 
-$ErrorActionPreference = "Stop"
-Write-Host "Project: $Project  Region: $Region"
+<#
+.SYNOPSIS
+  Build & deploy ODIN Gateway (and optional Dashboard) to Google Cloud Run.
 
-# Enable required GCP APIs
-gcloud services enable run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com --project $Project
+.DESCRIPTION
+  Convenience wrapper around gcloud builds submit & gcloud run deploy.
+  Expects gcloud CLI authenticated and appropriate IAM permissions.
 
-# Ensure Artifact Registry repositories exist
-Write-Host "Ensuring Artifact Registry repositories ($RepoLocation) ..."
-gcloud artifacts repositories describe $GatewayRepo --location=$RepoLocation --project $Project 2>$null
-if ($LASTEXITCODE -ne 0) {
-  Write-Host "Creating repo $GatewayRepo"
-  gcloud artifacts repositories create $GatewayRepo --repository-format=docker --location=$RepoLocation --description="ODIN gateway images" --project $Project
+  REQUIRED ENV VARS (for secure signing):
+    ODIN_GATEWAY_PRIVATE_KEY_B64  - 32-byte Ed25519 seed (base64url, no padding)
+    ODIN_GATEWAY_KID              - Key identifier string
+
+  OPTIONAL ENV VARS:
+    ODIN_ADDITIONAL_PUBLIC_JWKS   - JSON string of extra public keys
+    ODIN_API_KEY_SECRETS          - JSON map of api_key->secret for HMAC layer
+    FIRESTORE_PROJECT             - Enables Firestore receipt backend (ADC must be configured)
+    RECEIPT_LOG_PATH              - Override local JSONL path (when not using Firestore)
+
+  USAGE:
+    ./scripts/deploy_cloud_run.ps1 -Project my-gcp-proj -Region us-central1 -Build
+    ./scripts/deploy_cloud_run.ps1 -Project my-gcp-proj -DeployDashboard
+
+  NOTES:
+    * If -Build omitted, script assumes images already exist in Artifact Registry.
+    * Artifact Registry repo must exist (Docker format). Create once:
+        gcloud artifacts repositories create $Repo --repository-format=docker --location=$Region --description="ODIN images"
+#>
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+
+function Write-Info($msg){ Write-Host "[INFO] $msg" -ForegroundColor Cyan }
+function Write-Warn($msg){ Write-Host "[WARN] $msg" -ForegroundColor Yellow }
+function Write-Err($msg){ Write-Host "[ERR ] $msg" -ForegroundColor Red }
+
+Write-Info "Project: $Project | Region: $Region"
+
+# Validate gcloud
+if (-not (Get-Command gcloud -ErrorAction SilentlyContinue)) {
+    Write-Err "gcloud CLI not found in PATH."; exit 1
 }
-gcloud artifacts repositories describe $DashboardRepo --location=$RepoLocation --project $Project 2>$null
-if ($LASTEXITCODE -ne 0) {
-  Write-Host "Creating repo $DashboardRepo"
-  gcloud artifacts repositories create $DashboardRepo --repository-format=docker --location=$RepoLocation --description="ODIN dashboard images" --project $Project
-}
 
-# Create dashboard Dockerfile if missing
-$dfDash = "Dockerfile.dashboard"
-if (-not (Test-Path $dfDash)) {
-  @"
-FROM python:3.11-slim
-WORKDIR /app
-ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
-COPY . /app
-RUN pip install --no-cache-dir -r requirements.txt
-ENV PORT=8080
-CMD ["bash","-lc","uvicorn services.dashboard.main:app --host 0.0.0.0 --port ${PORT:-8080}"]
-"@ | Out-File -Encoding UTF8 $dfDash
-  Write-Host "Wrote $dfDash"
-}
+Write-Info "Setting active project"
+gcloud config set project $Project | Out-Null
 
-$GW_IMG = "$RepoLocation-docker.pkg.dev/$Project/$GatewayRepo/odin-gateway:latest"
-$DB_IMG = "$RepoLocation-docker.pkg.dev/$Project/$DashboardRepo/odin-dashboard:latest"
+$GatewayImage = "$Region-docker.pkg.dev/$Project/$Repo/$GatewayService:latest"
+$DashboardImage = "$Region-docker.pkg.dev/$Project/$Repo/$DashboardService:latest"
 
 if ($Build) {
-  Write-Host "Building images via Cloud Build (temp Dockerfile swap)..."
-  $existingDockerfile = $null
-  $hadDockerfile = Test-Path ./Dockerfile
-
-  if ($hadDockerfile) {
-    $existingDockerfile = Get-Content -Raw ./Dockerfile
-  }
-  try {
-    # Gateway image build
-    Copy-Item -Force Dockerfile.gateway Dockerfile
-  Write-Host "Building gateway image: $GW_IMG"
-    gcloud builds submit --tag $GW_IMG --project $Project .
-    if ($LASTEXITCODE -ne 0) { throw "Gateway image build failed" }
-
-    # Dashboard image build
-    if (-not (Test-Path Dockerfile.dashboard)) { throw "Dockerfile.dashboard missing" }
-    Copy-Item -Force Dockerfile.dashboard Dockerfile
-  Write-Host "Building dashboard image: $DB_IMG"
-    gcloud builds submit --tag $DB_IMG --project $Project .
-    if ($LASTEXITCODE -ne 0) { throw "Dashboard image build failed" }
-  }
-  finally {
-    if ($hadDockerfile) {
-      Set-Content -NoNewline -Encoding UTF8 Dockerfile $existingDockerfile
-    } else {
-      if (Test-Path Dockerfile) { Remove-Item Dockerfile -Force }
+    Write-Info "Building & pushing gateway image: $GatewayImage"
+    gcloud builds submit --config <# implicit #> --tag $GatewayImage --region $Region --project $Project --timeout=900 -f $GatewayDockerfile .
+    if ($DeployDashboard) {
+        Write-Info "Building & pushing dashboard image: $DashboardImage"
+        gcloud builds submit --tag $DashboardImage --region $Region --project $Project --timeout=900 -f $DashboardDockerfile .
     }
-  }
+}
+else {
+    Write-Warn "-Build not set; skipping image build. Assuming images already exist."
 }
 
-# Generate keypair if env not set
-if (-not $env:ODIN_GATEWAY_PRIVATE_KEY_B64 -or -not $env:ODIN_GATEWAY_KID) {
-  Write-Host "Generating gateway keys..."
-  $gen = python scripts\gen_keys.py | Out-String
-  # Parse current output format (ODIN_GATEWAY_PRIVATE_KEY_B64= ...)
-  $priv = [regex]::Match($gen,'ODIN_GATEWAY_PRIVATE_KEY_B64=\s*([A-Za-z0-9_-]+)').Groups[1].Value
-  $kid  = [regex]::Match($gen,'ODIN_GATEWAY_KID=\s*([A-Za-z0-9_-]+)').Groups[1].Value
-  if (-not $priv -or -not $kid) { throw "Failed to parse key generation output" }
-  $env:ODIN_GATEWAY_PRIVATE_KEY_B64 = $priv
-  $env:ODIN_GATEWAY_KID = $kid
+# Gateway deploy
+Write-Info "Deploying Cloud Run service: $GatewayService"
+
+$gatewayEnv = @()
+foreach ($name in 'ODIN_GATEWAY_PRIVATE_KEY_B64','ODIN_GATEWAY_KID','ODIN_ADDITIONAL_PUBLIC_JWKS','ODIN_API_KEY_SECRETS','FIRESTORE_PROJECT','RECEIPT_LOG_PATH') {
+    if ($env:$name) { $gatewayEnv += "$name=$($env:$name)" }
+}
+if (-not ($gatewayEnv | Where-Object { $_ -like 'ODIN_GATEWAY_PRIVATE_KEY_B64*'})) {
+    Write-Warn "ODIN_GATEWAY_PRIVATE_KEY_B64 not present in environment; deployment will generate an ephemeral key (not recommended for prod)."
 }
 
-# Deploy gateway
-Write-Host "Deploying $GatewayService ..."
-$helRaw = $env:HEL_ALLOWLIST
-if ($helRaw) {
-  # Remove whitespace and replace '/' with placeholder to avoid any parsing ambiguity
-  $helSanitized = ($helRaw -replace '\s','').Replace('/','__SL__')
-} else { $helSanitized = '' }
-$GATEWAY_URL = (gcloud run deploy $GatewayService `
-  --image $GW_IMG --region $Region --platform managed --allow-unauthenticated `
-  --set-env-vars "ODIN_GATEWAY_PRIVATE_KEY_B64=$env:ODIN_GATEWAY_PRIVATE_KEY_B64,ODIN_GATEWAY_KID=$env:ODIN_GATEWAY_KID,HEL_ALLOWLIST=$helSanitized" `
-  --format="value(status.url)" --project $Project)
+gcloud run deploy $GatewayService `
+  --image $GatewayImage `
+  --platform managed `
+  --region $Region `
+  --allow-unauthenticated `
+  --port $GatewayPort `
+  --cpu 1 `
+  --memory 512Mi `
+  --execution-environment gen2 `
+  --set-env-vars ($gatewayEnv -join ',')
 
-if (-not $GATEWAY_URL) { throw "Failed to obtain Gateway URL" }
-Write-Host "Gateway URL: $GATEWAY_URL"
+$GatewayURL = (gcloud run services describe $GatewayService --region $Region --format='value(status.url)')
+Write-Info "Gateway URL: $GatewayURL"
 
-# Deploy dashboard
-Write-Host "Deploying $DashboardService ..."
-$DASHBOARD_URL = (gcloud run deploy $DashboardService `
-  --image $DB_IMG --region $Region --platform managed --allow-unauthenticated `
-  --set-env-vars "GATEWAY_URL=$GATEWAY_URL" `
-  --format="value(status.url)" --project $Project)
+if ($DeployDashboard) {
+    Write-Info "Deploying Cloud Run service: $DashboardService"
+    $dashEnv = @("GATEWAY_URL=$GatewayURL")
+    gcloud run deploy $DashboardService `
+      --image $DashboardImage `
+      --platform managed `
+      --region $Region `
+      --allow-unauthenticated `
+      --port $DashboardPort `
+      --cpu 1 `
+      --memory 256Mi `
+      --execution-environment gen2 `
+      --set-env-vars ($dashEnv -join ',')
+    $DashboardURL = (gcloud run services describe $DashboardService --region $Region --format='value(status.url)')
+    Write-Info "Dashboard URL: $DashboardURL"
+}
 
-if (-not $DASHBOARD_URL) { throw "Failed to obtain Dashboard URL" }
-Write-Host "Dashboard URL: $DASHBOARD_URL"
-
-# Smoke checks
-Write-Host "Smoke check: Gateway /healthz"
+Write-Info "Performing smoke health check..."
 try {
-  $resp = Invoke-WebRequest "$GATEWAY_URL/healthz" -UseBasicParsing -TimeoutSec 20
-  Write-Host "Gateway healthz: $($resp.StatusCode)"
+    $health = (Invoke-RestMethod -Uri "$GatewayURL/healthz" -TimeoutSec 10)
+    Write-Info "Health: $(ConvertTo-Json $health -Compress)"
 } catch {
-  Write-Warning "Gateway health failed: $($_.Exception.Message)"
+    Write-Warn "Health check failed: $($_.Exception.Message)"
 }
 
-Write-Host "Smoke check: Dashboard /"
-try {
-  $resp = Invoke-WebRequest "$DASHBOARD_URL" -UseBasicParsing -TimeoutSec 20
-  Write-Host "Dashboard root: $($resp.StatusCode)"
-} catch {
-  Write-Warning "Dashboard check failed: $($_.Exception.Message)"
-}
-
-Write-Host "`nDone."
-Write-Host "Gateway:   $GATEWAY_URL"
-Write-Host "Dashboard: $DASHBOARD_URL"
+Write-Info "Done."

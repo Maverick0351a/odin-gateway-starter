@@ -12,3 +12,5 @@ dependencies = ["httpx>=0.27.0","cryptography>=43.0.1"]
 
 [project.scripts]
 odin = "odin_sdk.cli:main"
+odinpy = "odin_sdk.cli:main"
+odin-sdk = "odin_sdk.cli:main"

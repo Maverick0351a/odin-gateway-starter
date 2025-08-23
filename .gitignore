@@ -23,3 +23,4 @@ packages/odin_sdk_js/dist/
 *.json  # (dont commit SA keys)
 gw.env.yaml
 dash.env.yaml
+odin_receipts.jsonl

@@ -1,3 +1,4 @@
+"""Service packages root."""
 """Top-level services package.
 
 Adding this file ensures the 'services' namespace is explicitly recognized as a
