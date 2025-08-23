@@ -77,6 +77,8 @@ Export endpoint: `/v1/receipts/export/{trace_id}` returns a signed bundle; clien
 | `ODIN_GCP_KMS_KEY` | Full resource name of Ed25519 KMS key version (gcpkms backend) | `projects/<p>/locations/<l>/keyRings/<r>/cryptoKeys/<k>/cryptoKeyVersions/1` |
 | `ODIN_AWS_KMS_KEY_ID` | AWS KMS key id or ARN for ED25519 key (awskms backend) | `arn:aws:kms:us-east-1:123456789012:key/uuid` |
 | `ODIN_AZURE_KEY_ID` | Azure Key Vault key identifier (versioned) for Ed25519 key | `https://<vault>.vault.azure.net/keys/<name>/<version>` |
+| `ODIN_POLICY_REGO_PATH` | Path to Rego policy file (enables Rego engine) | `policies/egress.rego` |
+| `OPA_BIN` | OPA binary name/path (when using Rego) | `opa` |
 | `ODIN_GATEWAY_PRIVATE_KEY_B64` | Base64url Ed25519 32‑byte seed for gateway signing (file backend) | Generated via `scripts/gen_keys.py` |
 | `ODIN_GATEWAY_KID` | Key ID exposed in JWKS and headers (can be auto‑derived) | Any unique string (e.g. `gw-2025-01`) |
 | `ODIN_ADDITIONAL_PUBLIC_JWKS` | JSON string of legacy/extra JWKs for verification | `{"keys":[...]}` |
@@ -164,6 +166,7 @@ Security notes:
 * Response headers: `X-ODIN-Receipt-Hash`, `X-ODIN-Response-CID`, `X-ODIN-Signature`, `X-ODIN-KID`
 * Export bundle: signed pattern assures integrity + ordering
 * Chain validation: each receipt's `prev_receipt_hash` must match prior's `receipt_hash`
+* Policy attestation (future): expose which engine (HEL or Rego) evaluated egress decision in receipt metadata.
 
 ---
 
@@ -644,6 +647,7 @@ node bin/odin.js send --gateway http://127.0.0.1:8080 \
 * KMS: When using `ODIN_SIGNER_BACKEND=gcpkms`, the private key material never leaves Cloud KMS; only signatures are returned. Ensure the service account has `cloudkms.cryptoKeyVersions.useToSign`.
 * AWS KMS: With `ODIN_SIGNER_BACKEND=awskms` the gateway signs via AWS KMS (key spec `ECC_ED25519`). IAM role needs `kms:Sign` and `kms:GetPublicKey`.
 * Azure KV: With `ODIN_SIGNER_BACKEND=azurekv` the gateway uses Key Vault (Ed25519 key) via `DefaultAzureCredential`; assign `keys/sign` and `keys/get` permissions.
+* Policy: Rego evaluation failures fall back to deny with a `rego_error` reason (fail closed). Keep policy minimal and test with `opa eval` before deployment.
 * Signed Contexts: Envelopes sign `<cid>|<trace_id>|<ts>`; export bundles sign `<bundle_cid>|<trace_id>|<exported_at>` binding content + lineage + freshness.
 * Tamper Evidence: Receipts are hash‑linked (`prev_receipt_hash`); altering history breaks the chain.
 * Defense in Depth: Optional API key + HMAC (`X-ODIN-API-Key` / `X-ODIN-API-MAC`) mitigates spoofing and simple replay.

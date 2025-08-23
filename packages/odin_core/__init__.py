@@ -5,6 +5,6 @@ from .crypto import (
 from .cid import cid_sha256, sha256_hex
 from .utils import now_ts_iso, canonical_json, gen_trace_id
 from .sft import transform_payload, SFTError
-from .hel import PolicyEngine, HELResult
+from .hel import PolicyEngine, HELResult, PolicyManager, RegoPolicyEngine
 from .receipts import build_receipt, hash_receipt
 from .firestore_log import ReceiptStore

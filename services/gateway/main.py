@@ -24,7 +24,7 @@ for anc in pathlib.Path(__file__).resolve().parents:
 from odin_core import (
     verify_with_jwk,
     cid_sha256, now_ts_iso, gen_trace_id, transform_payload, SFTError,
-    PolicyEngine, build_receipt, ReceiptStore, b64u_encode, canonical_json
+    PolicyManager, build_receipt, ReceiptStore, b64u_encode, canonical_json
 )
 from odin_core.signer import load_signer
 try:
@@ -78,7 +78,7 @@ def _load_additional_jwks():
         logger.warning(f"Failed parsing ODIN_ADDITIONAL_PUBLIC_JWKS: {e}")
     return None
 
-policy_engine = PolicyEngine()
+policy_engine = PolicyManager()
 store = ReceiptStore()
 control_plane = ControlPlane()
 rate_limiter = control_plane.rate_limiter()
