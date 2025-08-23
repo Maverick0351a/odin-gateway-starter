@@ -23,12 +23,21 @@ from odin_core import (
 )
 try:
     from odin_core.control import ControlPlane  # direct module import
-except ModuleNotFoundError:
-    # Fallback: dynamic path resolution
-    spec_dir = pathlib.Path(__file__).resolve().parents[2] / 'packages' / 'odin_core'
-    if (spec_dir / 'control.py').exists():
-        sys.path.insert(0, str(spec_dir.parent))
-        from odin_core.control import ControlPlane  # type: ignore
+except Exception as _cp_err:  # noqa
+    # Fallback: manual spec load if standard import failed for any reason
+    spec_dir = pkg_path / 'odin_core'
+    ctrl_file = spec_dir / 'control.py'
+    if ctrl_file.exists():
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('odin_core.control', ctrl_file)
+        if spec and spec.loader:
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)  # type: ignore
+            ControlPlane = getattr(module, 'ControlPlane')  # type: ignore
+        else:
+            raise ImportError(f"Unable to load ControlPlane (spec failure): {_cp_err}")
+    else:
+        raise ImportError(f"ControlPlane module not found at {ctrl_file}: {_cp_err}")
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 logging.basicConfig(level=logging.INFO)
