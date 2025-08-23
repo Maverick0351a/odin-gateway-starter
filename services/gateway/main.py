@@ -290,75 +290,84 @@ def export_chain(trace_id: str):
 
 @app.post("/v1/odin/envelope")
 async def accept_envelope(ope: OPE, request: Request):
-    """Accept an OPE envelope, verify signature, normalize payload, enforce policy, optionally relay, return receipt.
+    """Accept an OPE envelope, verify & normalize, enforce policy/auth, optionally relay, return signed receipt.
 
-    Prometheus manual timing is used instead of the Histogram decorator because the latter
-    doesn't support awaiting async callables and was returning an un-awaited coroutine in tests.
+    Refactored into helpers for readability; behavior is intended to remain backward compatible.
     """
     _t0 = time.perf_counter()
-    payload_bytes = json.dumps(ope.payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
-    cid = cid_sha256(payload_bytes)
-    if ope.cid and ope.cid != cid:
-        REQS.labels(status="bad_cid").inc()
-        raise HTTPException(400, detail="CID does not match payload")
-    ope.cid = cid
 
+    # --- Phase 1: Canonical payload + CID validation ---
+    def _compute_and_validate_cid() -> str:
+        payload_bytes_local = json.dumps(ope.payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+        cid_local = cid_sha256(payload_bytes_local)
+        if ope.cid and ope.cid != cid_local:
+            REQS.labels(status="bad_cid").inc()
+            raise HTTPException(400, detail="CID does not match payload")
+        ope.cid = cid_local
+        return cid_local
+
+    cid = _compute_and_validate_cid()
     message = f"{cid}|{ope.trace_id}|{ope.ts}".encode("utf-8")
-    sender_jwk = None
 
-    # Timestamp skew enforcement (replay hardening)
-    try:
-        ts_dt = datetime.fromisoformat(ope.ts)
-        if ts_dt.tzinfo is None:
-            # assume UTC if naive
-            ts_dt = ts_dt.replace(tzinfo=timezone.utc)
-    except Exception:
-        REQS.labels(status="bad_ts").inc()
-        raise HTTPException(400, detail="Invalid ts format (expected ISO 8601)")
-    now_utc = datetime.now(timezone.utc)
-    delta = (now_utc - ts_dt).total_seconds()
-    max_skew = _current_skew_limit()
-    if delta > max_skew:
-        REQS.labels(status="ts_past").inc()
-        raise HTTPException(400, detail="Timestamp too far in past")
-    if delta < -max_skew:
-        REQS.labels(status="ts_future").inc()
-        raise HTTPException(400, detail="Timestamp too far in future")
-
-    if ope.sender and ope.sender.jwk:
-        sender_jwk = ope.sender.jwk
-    elif ope.sender and ope.sender.jwks_uri:
+    # --- Phase 2: Timestamp validation ---
+    def _validate_timestamp() -> None:
         try:
-            async with httpx.AsyncClient(timeout=5) as client:
-                resp = await client.get(ope.sender.jwks_uri)
-                resp.raise_for_status()
-                jwks = resp.json()
-                keys = jwks.get("keys", [])
-                if ope.sender.kid:
-                    for k in keys:
-                        if k.get("kid") == ope.sender.kid:
-                            sender_jwk = k
-                            break
-                if not sender_jwk and keys:
-                    sender_jwk = keys[0]
-        except Exception as e:
-            REQS.labels(status="jwks_error").inc()
-            raise HTTPException(400, detail=f"Failed to fetch/parse sender JWKS: {e}")
-    else:
+            ts_dt = datetime.fromisoformat(ope.ts)
+            if ts_dt.tzinfo is None:
+                ts_dt = ts_dt.replace(tzinfo=timezone.utc)
+        except Exception:
+            REQS.labels(status="bad_ts").inc()
+            raise HTTPException(400, detail="Invalid ts format (expected ISO 8601)")
+        delta = (datetime.now(timezone.utc) - ts_dt).total_seconds()
+        max_skew = _current_skew_limit()
+        if delta > max_skew:
+            REQS.labels(status="ts_past").inc()
+            raise HTTPException(400, detail="Timestamp too far in past")
+        if delta < -max_skew:
+            REQS.labels(status="ts_future").inc()
+            raise HTTPException(400, detail="Timestamp too far in future")
+
+    _validate_timestamp()
+
+    # --- Phase 3: Resolve sender key (direct JWK or JWKS fetch) ---
+    async def _resolve_sender_jwk() -> Dict[str, Any]:
+        if ope.sender and ope.sender.jwk:
+            return ope.sender.jwk
+        if ope.sender and ope.sender.jwks_uri:
+            try:
+                async with httpx.AsyncClient(timeout=5) as client:
+                    resp = await client.get(ope.sender.jwks_uri)
+                    resp.raise_for_status()
+                    jwks = resp.json()
+                    keys = jwks.get("keys", [])
+                    if ope.sender.kid:
+                        for k in keys:
+                            if k.get("kid") == ope.sender.kid:
+                                return k
+                    if keys:
+                        return keys[0]
+            except Exception as e:  # noqa: PERF203 acceptable; narrow scope
+                REQS.labels(status="jwks_error").inc()
+                raise HTTPException(400, detail=f"Failed to fetch/parse sender JWKS: {e}")
         REQS.labels(status="no_key").inc()
         raise HTTPException(400, detail="No sender JWK or JWKS URI provided")
 
-    if not verify_with_jwk(sender_jwk, message, ope.signature):
-        REQS.labels(status="bad_sig").inc()
-        raise HTTPException(400, detail="Invalid signature")
+    sender_jwk = await _resolve_sender_jwk()
 
-    # Replay detection (exact same signed context)
-    signed_context_hash = hashlib.sha256(message + ope.signature.encode('utf-8')).hexdigest()
-    if _is_replay(signed_context_hash):
-        REQS.labels(status="replay").inc()
-        raise HTTPException(409, detail="Replay detected (duplicate signed envelope)")
-    _replay_cache_add(signed_context_hash)
+    # --- Phase 4: Signature + replay protection ---
+    def _verify_signature_and_replay():
+        if not verify_with_jwk(sender_jwk, message, ope.signature):
+            REQS.labels(status="bad_sig").inc()
+            raise HTTPException(400, detail="Invalid signature")
+        signed_context_hash = hashlib.sha256(message + ope.signature.encode("utf-8")).hexdigest()
+        if _is_replay(signed_context_hash):
+            REQS.labels(status="replay").inc()
+            raise HTTPException(409, detail="Replay detected (duplicate signed envelope)")
+        _replay_cache_add(signed_context_hash)
 
+    _verify_signature_and_replay()
+
+    # --- Phase 5: Schema transform ---
     try:
         normalized_payload, sft_notes = transform_payload(ope.payload, ope.payload_type, ope.target_type)
     except SFTError as e:
@@ -366,83 +375,80 @@ async def accept_envelope(ope: OPE, request: Request):
         raise HTTPException(400, detail=str(e))
     normalized_cid = cid_sha256(json.dumps(normalized_payload, sort_keys=True, separators=(",", ":")).encode("utf-8"))
 
-    policy_result = {"passed": True, "rules": []}
-    forwarded = None
-    api_key = request.headers.get("x-odin-api-key") or request.headers.get("x-api-key")
-    tenant_ctx = None
-    # Decide if auth is required: explicit legacy env keys OR flag when tenants configured
-    require_flag = os.getenv("ODIN_REQUIRE_API_KEY", "0").lower() in ("1", "true", "yes")
-    auth_required = bool(API_KEY_SECRETS) or (require_flag and control_plane.data.get("tenants"))
-    if api_key:
-        tenant_ctx = control_plane.resolve_api_key(api_key)
-        # If auth not required (open mode) and api_key matches a tenant id, allow pseudo-context
-        if not tenant_ctx and api_key in control_plane.data.get("tenants", {}) and not auth_required:
-            t = control_plane.data["tenants"][api_key]
-            tenant_ctx = {"tenant_id": api_key, "secret": None, "rate_limit_rpm": t.get("rate_limit_rpm",0), "allowlist": t.get("allowlist", [])}
-    if auth_required:
-        if not api_key:
-            REQS.labels(status="unauthorized").inc()
-            raise HTTPException(401, detail="Missing API key")
-        secret = None
-        if tenant_ctx:
-            secret = tenant_ctx.get("secret")
-        elif api_key in API_KEY_SECRETS:
-            secret = API_KEY_SECRETS[api_key]
-        if not secret:
-            REQS.labels(status="unauthorized").inc()
-            raise HTTPException(401, detail="Unknown API key")
-        mac_header = request.headers.get("x-odin-api-mac")
-        if not mac_header:
-            REQS.labels(status="unauthorized").inc()
-            raise HTTPException(401, detail="Missing X-ODIN-API-MAC header")
-        expected = hmac.new(secret.encode(), message, hashlib.sha256).digest()
-        if not hmac.compare_digest(b64u_encode(expected), mac_header):
-            REQS.labels(status="unauthorized").inc()
-            raise HTTPException(401, detail="Bad API key MAC")
-        # Rate limiting (per tenant when available; else per key)
-        if tenant_ctx:
-            rpm = tenant_ctx.get("rate_limit_rpm", 0) or 0
-            if rpm > 0 and not rate_limiter.check(tenant_ctx["tenant_id"], rpm):
-                REQS.labels(status="rate_limited").inc()
-                raise HTTPException(429, detail="Rate limit exceeded")
-    if ope.forward_url:
+    # --- Phase 6: Auth + rate limiting ---
+    def _auth_and_rate_limit() -> Optional[Dict[str, Any]]:
+        api_key_local = request.headers.get("x-odin-api-key") or request.headers.get("x-api-key")
+        tenant_ctx_local = None
+        require_flag = os.getenv("ODIN_REQUIRE_API_KEY", "0").lower() in ("1", "true", "yes")
+        auth_required = bool(API_KEY_SECRETS) or (require_flag and control_plane.data.get("tenants"))
+        if api_key_local:
+            tenant_ctx_local = control_plane.resolve_api_key(api_key_local)
+            if not tenant_ctx_local and api_key_local in control_plane.data.get("tenants", {}) and not auth_required:
+                t = control_plane.data["tenants"][api_key_local]
+                tenant_ctx_local = {"tenant_id": api_key_local, "secret": None, "rate_limit_rpm": t.get("rate_limit_rpm",0), "allowlist": t.get("allowlist", [])}
+        if auth_required:
+            if not api_key_local:
+                REQS.labels(status="unauthorized").inc(); raise HTTPException(401, detail="Missing API key")
+            secret = tenant_ctx_local.get("secret") if tenant_ctx_local else API_KEY_SECRETS.get(api_key_local)
+            if not secret:
+                REQS.labels(status="unauthorized").inc(); raise HTTPException(401, detail="Unknown API key")
+            mac_header = request.headers.get("x-odin-api-mac")
+            if not mac_header:
+                REQS.labels(status="unauthorized").inc(); raise HTTPException(401, detail="Missing X-ODIN-API-MAC header")
+            expected = hmac.new(secret.encode(), message, hashlib.sha256).digest()
+            if not hmac.compare_digest(b64u_encode(expected), mac_header):
+                REQS.labels(status="unauthorized").inc(); raise HTTPException(401, detail="Bad API key MAC")
+            if tenant_ctx_local:
+                rpm = tenant_ctx_local.get("rate_limit_rpm", 0) or 0
+                if rpm > 0 and not rate_limiter.check(tenant_ctx_local["tenant_id"], rpm):
+                    REQS.labels(status="rate_limited").inc(); raise HTTPException(429, detail="Rate limit exceeded")
+        return tenant_ctx_local
+
+    tenant_ctx = _auth_and_rate_limit()
+
+    # --- Phase 7: Egress policy evaluation ---
+    def _egress_policy(tenant_ctx_local: Optional[Dict[str, Any]]):
+        if not ope.forward_url:
+            return {"passed": True, "rules": []}
         try:
             host = httpx.URL(ope.forward_url).host
         except Exception:
             raise HTTPException(400, detail="Invalid forward_url")
         hel = policy_engine.check_http_egress(host)
-        # Augment with tenant allowlist if policy failed and tenant context exists
-        if not hel.passed and tenant_ctx and host in (tenant_ctx.get("allowlist") or []):
+        if not hel.passed and tenant_ctx_local and host in (tenant_ctx_local.get("allowlist") or []):
             hel = type(hel)(passed=True, rule=hel.rule, reasons=hel.reasons + [f"tenant allowlist host {host} allowed"])
-        policy_result = {"passed": hel.passed, "rules": [{"rule": hel.rule, "reasons": hel.reasons}]}
+        result = {"passed": hel.passed, "rules": [{"rule": hel.rule, "reasons": hel.reasons}]}
         if not hel.passed:
-            REQS.labels(status="policy_block").inc()
-            raise HTTPException(403, detail=f"Egress blocked by policy: {hel.reasons}")
+            REQS.labels(status="policy_block").inc(); raise HTTPException(403, detail=f"Egress blocked by policy: {hel.reasons}")
+        return result
 
+    policy_result = _egress_policy(tenant_ctx)
+
+    # --- Phase 8: Build receipt & append transparency ---
     chain = store.get_chain(ope.trace_id)
     prev_hash = chain[-1].get("receipt_hash") if chain else None
-    # Identify policy engine type for provenance (HEL vs REGO or other) if available
     engine_type = getattr(policy_engine, 'active_engine', None)
     if engine_type and not isinstance(engine_type, str):
-        # some manager may expose object; derive name
         engine_type = getattr(engine_type, '__class__', type('x',(object,),{})).__name__.lower()
-    # Optional tenant dual-signature (BYOK) support: client can submit X-ODIN-Tenant-Signature over pattern
-    tenant_sigs = []
-    tenant_sig = request.headers.get("x-odin-tenant-signature")
-    tenant_sig_kid = request.headers.get("x-odin-tenant-kid")
-    if tenant_sig and tenant_sig_kid and tenant_ctx and tenant_ctx.get("custody_mode") == "byok":
-        pattern = f"{cid}|{normalized_cid}|{ope.trace_id}|{prev_hash or ''}"
-        tref = control_plane.get_tenant(tenant_ctx["tenant_id"]) or {}
-        signer_ref = tref.get("signer_ref") if isinstance(tref, dict) else None
-        if isinstance(signer_ref, dict):
-            try:
-                if verify_with_jwk(signer_ref, pattern.encode('utf-8'), tenant_sig):
-                    tenant_sigs.append({"kid": tenant_sig_kid, "sig": tenant_sig, "pattern": pattern})
-                else:
-                    audit("tenant_signature_invalid", tenant_id=tenant_ctx.get("tenant_id"), kid=tenant_sig_kid, trace_id=ope.trace_id)
-            except Exception:
-                audit("tenant_signature_error", tenant_id=tenant_ctx.get("tenant_id"), kid=tenant_sig_kid, trace_id=ope.trace_id)
+    def _tenant_dual_sigs() -> Optional[List[Dict[str, Any]]]:
+        tenant_sigs_local: List[Dict[str, Any]] = []
+        tenant_sig = request.headers.get("x-odin-tenant-signature")
+        tenant_sig_kid = request.headers.get("x-odin-tenant-kid")
+        if tenant_sig and tenant_sig_kid and tenant_ctx and tenant_ctx.get("custody_mode") == "byok":
+            pattern = f"{cid}|{normalized_cid}|{ope.trace_id}|{prev_hash or ''}"
+            tref = control_plane.get_tenant(tenant_ctx["tenant_id"]) or {}
+            signer_ref = tref.get("signer_ref") if isinstance(tref, dict) else None
+            if isinstance(signer_ref, dict):
+                try:
+                    if verify_with_jwk(signer_ref, pattern.encode('utf-8'), tenant_sig):
+                        tenant_sigs_local.append({"kid": tenant_sig_kid, "sig": tenant_sig, "pattern": pattern})
+                    else:
+                        audit("tenant_signature_invalid", tenant_id=tenant_ctx.get("tenant_id"), kid=tenant_sig_kid, trace_id=ope.trace_id)
+                except Exception:
+                    audit("tenant_signature_error", tenant_id=tenant_ctx.get("tenant_id"), kid=tenant_sig_kid, trace_id=ope.trace_id)
+        return tenant_sigs_local or None
 
+    tenant_sigs = _tenant_dual_sigs()
     receipt = build_receipt(
         signer=_signer,
         trace_id=ope.trace_id,
@@ -454,7 +460,7 @@ async def accept_envelope(ope: OPE, request: Request):
         prev_receipt_hash=prev_hash,
         policy_engine=engine_type,
         tenant_id=tenant_ctx.get("tenant_id") if tenant_ctx else None,
-        tenant_signatures=tenant_sigs or None,
+        tenant_signatures=tenant_sigs,
     )
     store.add_receipt(receipt)
     try:
@@ -463,7 +469,10 @@ async def accept_envelope(ope: OPE, request: Request):
         logger.warning(f"transparency_log add_leaf failed: {_tl_err}")
     audit("receipt_appended", trace_id=ope.trace_id, hop=receipt.get("hop"), receipt_hash=receipt.get("receipt_hash"))
 
-    if ope.forward_url and RELAY_URL:
+    # --- Phase 9: Optional relay ---
+    async def _maybe_forward() -> Optional[Dict[str, Any]]:
+        if not (ope.forward_url and RELAY_URL):
+            return None
         try:
             async with httpx.AsyncClient(timeout=15) as client:
                 relay_resp = await client.post(f"{RELAY_URL}/v1/relay", json={
@@ -472,13 +481,16 @@ async def accept_envelope(ope: OPE, request: Request):
                     "method": "POST",
                     "body": normalized_payload,
                 })
-                forwarded = {
+                return {
                     "status_code": relay_resp.status_code,
                     "body": relay_resp.json() if "application/json" in relay_resp.headers.get("content-type", "") else relay_resp.text,
                 }
-        except Exception as e:
-            forwarded = {"error": str(e)}
+        except Exception as e:  # network or json error should not fail core path
+            return {"error": str(e)}
 
+    forwarded = await _maybe_forward()
+
+    # --- Phase 10: Build response & sign ---
     resp_body = {
         "trace_id": ope.trace_id,
         "receipt": receipt,
@@ -490,7 +502,6 @@ async def accept_envelope(ope: OPE, request: Request):
     body_bytes = json.dumps(resp_body, sort_keys=True, separators=(",", ":")).encode("utf-8")
     resp_cid = cid_sha256(body_bytes)
     sig = _signer.sign(f"{resp_cid}|{ope.trace_id}|{receipt['ts']}".encode("utf-8"))
-
     headers = {
         "X-ODIN-Trace-Id": ope.trace_id,
         "X-ODIN-Receipt-Hash": receipt["receipt_hash"],
@@ -505,8 +516,7 @@ async def accept_envelope(ope: OPE, request: Request):
         PROC.observe(duration)
     except Exception:
         pass
-    encoded = jsonable_encoder(resp_body)
-    return JSONResponse(encoded, headers=headers)
+    return JSONResponse(jsonable_encoder(resp_body), headers=headers)
 
 # ---------------- Admin API -----------------
 
