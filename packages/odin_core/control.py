@@ -13,11 +13,11 @@ from typing import Any, Dict, List, Optional
 
 
 def ISO() -> str:  # noqa: N802 (keep uppercase helper name for brevity)
-    """Return current UTC timestamp in ISO 8601 format with timezone.
+    """Return current UTC timestamp in ISO 8601 format with timezone (aware).
 
-    Small helper kept uppercase to align with previous usage; exempt from naming lint.
+    Uses datetime.now(timezone.utc) instead of deprecated utcnow.
     """
-    return datetime.datetime.utcnow().replace(tzinfo=datetime.timezone.utc).isoformat()
+    return datetime.datetime.now(datetime.timezone.utc).isoformat()
 
 class ControlPlane:
     def __init__(self, path: Optional[str] = None):  # path ignored in stub

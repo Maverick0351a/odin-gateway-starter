@@ -1,4 +1,24 @@
-﻿# Python
+﻿__pycache__/
+.pytest_cache/
+.venv/
+env/
+*.py[cod]
+
+# Logs and artifacts (exclude large, generated logs)
+*.log
+audit.log
+transparency.log
+receipts.jsonl
+*.jsonl
+
+# IDE/editor
+.vscode/
+*.swp
+
+# OS
+Thumbs.db
+Desktop.ini
+# Python
 .venv/
 __pycache__/
 *.pyc

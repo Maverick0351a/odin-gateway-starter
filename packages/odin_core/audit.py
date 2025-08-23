@@ -7,14 +7,20 @@ Environment:
   ODIN_AUDIT_LOG_PATH : path to JSONL file (default: audit.log). If set to '-' logs go to stdout.
 """
 from __future__ import annotations
-from typing import Dict, Any, Optional
-import os, json, threading, datetime, sys
+
+import datetime
+import json
+import os
+import sys
+import threading
+from typing import Any, Dict
 
 _PATH = os.getenv("ODIN_AUDIT_LOG_PATH", "audit.log")
 _LOCK = threading.RLock()
 
 def _ts() -> str:
-    return datetime.datetime.utcnow().replace(tzinfo=datetime.timezone.utc).isoformat()
+    # Use timezone-aware now instead of deprecated utcnow
+    return datetime.datetime.now(datetime.timezone.utc).isoformat()
 
 def audit(event: str, **fields: Any) -> None:
     rec: Dict[str, Any] = {"ts": _ts(), "event": event}
