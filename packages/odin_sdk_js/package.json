@@ -1,6 +1,6 @@
 {
   "name": "@maverick0351a/odin-sdk-js",
-  "version": "0.1.1-beta.0",
+  "version": "0.1.1-beta.1",
   "description": "ODIN Node/TypeScript SDK (OPE sign/send/verify, receipts, exports)",
   "type": "module",
   "main": "dist/index.js",
