@@ -19,7 +19,7 @@ from odin_core import (
     cid_sha256, now_ts_iso, gen_trace_id, transform_payload, SFTError,
     PolicyEngine, build_receipt, ReceiptStore, b64u_encode, canonical_json
 )
-from odin_core.control import ControlPlane
+from odin_core import ControlPlane
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 logging.basicConfig(level=logging.INFO)
