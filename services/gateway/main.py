@@ -12,14 +12,23 @@ from cryptography.hazmat.primitives import serialization
 import hmac, hashlib
 
 import sys, pathlib
-sys.path.append(str(pathlib.Path(__file__).resolve().parents[2] / "packages"))
+pkg_path = pathlib.Path(__file__).resolve().parents[2] / "packages"
+if str(pkg_path) not in sys.path:
+    sys.path.insert(0, str(pkg_path))
 
 from odin_core import (
     load_or_create_private_key, sign_bytes, verify_with_jwk,
     cid_sha256, now_ts_iso, gen_trace_id, transform_payload, SFTError,
     PolicyEngine, build_receipt, ReceiptStore, b64u_encode, canonical_json
 )
-from odin_core import ControlPlane
+try:
+    from odin_core.control import ControlPlane  # direct module import
+except ModuleNotFoundError:
+    # Fallback: dynamic path resolution
+    spec_dir = pathlib.Path(__file__).resolve().parents[2] / 'packages' / 'odin_core'
+    if (spec_dir / 'control.py').exists():
+        sys.path.insert(0, str(spec_dir.parent))
+        from odin_core.control import ControlPlane  # type: ignore
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 logging.basicConfig(level=logging.INFO)
