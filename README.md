@@ -4,6 +4,7 @@
 [![PyPI](https://img.shields.io/pypi/v/odin-sdk.svg)](https://pypi.org/project/odin-sdk/)
 [![npm (next)](https://img.shields.io/npm/v/@maverick0351a/odin-sdk-js/next.svg)](https://www.npmjs.com/package/@maverick0351a/odin-sdk-js)
 [![License](https://img.shields.io/badge/license-Apache--2.0-lightgrey)](LICENSE)
+[![Google Cloud Partner](https://img.shields.io/badge/Google%20Cloud-Partner-4285F4?logo=googlecloud&logoColor=white)](https://cloud.google.com/partners)
 
 > Production‑ready starter for governed, verifiable AI→AI communication using the **ODIN OPE (Open Proof Envelope)** protocol.
 

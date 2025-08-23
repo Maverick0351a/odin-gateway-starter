@@ -97,11 +97,13 @@ class GCPKMSSigner:
         return {"kty": "OKP", "crv": "Ed25519", "x": b64u_encode(self._raw_pub), "kid": self._kid}
 
     def sign(self, message: bytes) -> str:
-        from .crypto import b64u_encode as _b64
-    # Google Cloud KMS ED25519: sign raw message via asymmetric_sign (no pre-hash)
-        req = {"name": self._key_name, "data": message}
-        resp = self._client.asymmetric_sign(request=req)
-        return _b64(resp.signature)
+            """Sign bytes using Google Cloud KMS Ed25519 key version.
+
+            KMS performs raw Ed25519 signing (no hashing)."""
+            from .crypto import b64u_encode as _b64
+            req = {"name": self._key_name, "data": message}
+            resp = self._client.asymmetric_sign(request=req)
+            return _b64(resp.signature)
 
 
 def load_signer() -> Signer:
@@ -125,7 +127,7 @@ def load_signer() -> Signer:
             raise ValueError("ODIN_AWS_KMS_KEY_ID required for awskms backend")
         return AWSKMSSigner(key_id)
     if backend == "azurekv":
-        key_id = os.getenv("ODIN_AZURE_KEY_ID")  # full Key Vault key identifier (versioned or not)
+        key_id = os.getenv("ODIN_AZURE_KEY_ID")
         if not key_id:
             raise ValueError("ODIN_AZURE_KEY_ID required for azurekv backend")
         return AzureKVSigner(key_id)
@@ -162,54 +164,54 @@ class AWSKMSSigner:
         return _b64(resp["Signature"])
 
 class AzureKVSigner:
-    """Ed25519 signer using Azure Key Vault (requires an Ed25519 key in vault)."""
+    """Ed25519 signer using Azure Key Vault.
+
+    Requires azure-identity and azure-keyvault-keys packages when backend selected.
+    """
     def __init__(self, key_id: str):
         from urllib.parse import urlparse
-
-        from azure.identity import DefaultAzureCredential
-        from azure.keyvault.keys import KeyClient
-        from azure.keyvault.keys.crypto import CryptographyClient
+        from azure.identity import DefaultAzureCredential  # type: ignore
+        from azure.keyvault.keys import KeyClient  # type: ignore
+        from azure.keyvault.keys.crypto import CryptographyClient  # type: ignore
         self._key_id = key_id
         cred = DefaultAzureCredential()
-        # Derive vault URL from key id
         parsed = urlparse(key_id)
         vault_url = f"{parsed.scheme}://{parsed.netloc}"
-        # Fetch key (KeyClient used for retrieval, crypto client for signing)
         kc = KeyClient(vault_url=vault_url, credential=cred)
-        name = parsed.path.strip('/').split('/')[1]  # /keys/<name>/<version?>
-        # If version specified in path length > 2
         parts = parsed.path.strip('/').split('/')
+        # /keys/<name>/<version?>
+        name = parts[1] if len(parts) > 1 else None
+        if not name:
+            raise ValueError("Invalid Azure key id path")
         version = parts[2] if len(parts) > 2 else None
-        key_bundle = kc.get_key(name, version=version)  # no network if cached
-        self._raw_pub = key_bundle.key.x  # Already base64url per spec for OKP? If Ed25519, azure returns 'x'
-        # If azure returns only JWK form we store raw bytes after decoding
-        import base64
+        key_bundle = kc.get_key(name, version=version)
+        # Extract base64url 'x' coordinate (Ed25519 raw key) from bundle
+        self._raw_pub_b64: str = getattr(getattr(key_bundle, "key", key_bundle), "x", "")
+        from base64 import urlsafe_b64decode
+        raw: bytes
         try:
-            raw = base64.urlsafe_b64decode(self._raw_pub + '===' )
-            if len(raw) == 32:
-                self._raw_pub_bytes = raw
-            else:
-                self._raw_pub_bytes = raw[-32:]
+            padded = self._raw_pub_b64 + "==="
+            raw = urlsafe_b64decode(padded)
         except Exception:
-            self._raw_pub_bytes = b""  # fallback
+            raw = b""
+        if len(raw) == 32:
+            self._raw_pub_bytes = raw
+        else:  # fallback slice
+            self._raw_pub_bytes = raw[-32:] if len(raw) > 32 else b""
         self._crypto = CryptographyClient(key_bundle.id, credential=cred)
         import hashlib
         self._kid = os.getenv("ODIN_GATEWAY_KID") or f"azure-ed25519-{hashlib.sha256(self._raw_pub_bytes).hexdigest()[:16]}"
-        from azure.keyvault.keys.crypto import SignatureAlgorithm as _Alg
-        self._alg = _Alg.ED25519
 
     def kid(self) -> str:
         return self._kid
 
     def public_jwk(self) -> Dict[str, Any]:
-        # If we failed to parse raw bytes earlier, raise to avoid silent bad key exposure
-        if not getattr(self, '_raw_pub_bytes', None):
+        if not self._raw_pub_bytes:
             raise RuntimeError("AzureKVSigner missing raw public key bytes")
         return {"kty": "OKP", "crv": "Ed25519", "x": b64u_encode(self._raw_pub_bytes), "kid": self._kid}
 
     def sign(self, message: bytes) -> str:
-        from azure.keyvault.keys.crypto import SignatureAlgorithm
-
+        from azure.keyvault.keys.crypto import SignatureAlgorithm  # type: ignore
         from .crypto import b64u_encode as _b64
         resp = self._crypto.sign(SignatureAlgorithm.ED25519, message)
         return _b64(resp.signature)
