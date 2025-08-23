@@ -69,3 +69,5 @@ def test_envelope_end_to_end():
     assert data["trace_id"] == trace_id
     assert "receipt" in data
     assert "normalized_payload" in data
+    # New: policy engine provenance field should be present (may be lowercased class name)
+    assert "policy_engine" in data["receipt"] or data.get("policy_engine")

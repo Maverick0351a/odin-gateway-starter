@@ -1,0 +1,11 @@
+{
+  "name": "basic invoice envelope",
+  "input": {
+    "payload": {"invoice_id":"INV-1","amount":100.25,"currency":"USD"},
+    "payload_type": "invoice.vendor.v1",
+    "target_type": "invoice.iso20022.v1"
+  },
+  "expected": {
+    "target_type": "invoice.iso20022.v1"
+  }
+}

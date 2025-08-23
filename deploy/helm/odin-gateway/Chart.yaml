@@ -1,0 +1,17 @@
+apiVersion: v2
+name: odin-gateway
+version: 0.1.0
+appVersion: "0.1.0"
+description: Helm chart for ODIN Gateway (OPE protocol) deploy
+home: https://github.com/Maverick0351a/odin-gateway-starter
+keywords:
+  - odin
+  - ope
+  - receipts
+  - transparency
+sources:
+  - https://github.com/Maverick0351a/odin-gateway-starter
+maintainers:
+  - name: ODIN Project
+    email: devrel@example.com
+license: Apache-2.0

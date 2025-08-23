@@ -33,6 +33,61 @@ class ReceiptStore:
                 logger.info("google-cloud-firestore not installed; using local JSONL store")
             else:
                 logger.info("No FIRESTORE_PROJECT_ID/GOOGLE_CLOUD_PROJECT set; using local JSONL store")
+        # Retention configuration (local mode only)
+        def _get_int(name: str, default: int) -> int:
+            try:
+                return int(os.getenv(name, str(default)))
+            except Exception:
+                return default
+        self._retention_max_lines = _get_int("ODIN_RETENTION_MAX_LOCAL_LINES", 0)  # 0 = unlimited
+        self._retention_max_age_sec = _get_int("ODIN_RETENTION_MAX_AGE_SECONDS", 0)  # 0 = unlimited
+        # Firestore TTL: If FIRESTORE_TTL_DAYS set, users should configure a TTL policy on field 'created_at'.
+        # We record the config for health visibility but do not enforce deletes client-side (let Firestore TTL do it).
+        self._firestore_ttl_days = _get_int("FIRESTORE_TTL_DAYS", 0)
+
+    # ---------------- Retention (local mode) ----------------
+    def _prune_local(self):
+        if self._client:
+            return  # Firestore pruning not implemented
+        if self._retention_max_lines <= 0 and self._retention_max_age_sec <= 0:
+            return
+        try:
+            if not self._local_path.exists():
+                return
+            raw_lines = self._local_path.read_text(encoding='utf-8').splitlines()
+            # Preserve chronological order as written
+            lines = raw_lines
+            # Age filtering
+            if self._retention_max_age_sec > 0:
+                import json, datetime
+                cutoff = datetime.datetime.now(datetime.timezone.utc).timestamp() - self._retention_max_age_sec
+                kept = []
+                for ln in lines:
+                    try:
+                        doc = json.loads(ln)
+                        ts_raw = doc.get('ts') or doc.get('created_at')
+                        if not ts_raw:
+                            continue
+                        try:
+                            dt = datetime.datetime.fromisoformat(ts_raw)
+                            if dt.tzinfo is None:
+                                dt = dt.replace(tzinfo=datetime.timezone.utc)
+                            if dt.timestamp() >= cutoff:
+                                kept.append(ln)
+                        except Exception:
+                            continue
+                    except Exception:
+                        continue
+                lines = kept
+            # Line count pruning (keep newest)
+            if self._retention_max_lines > 0 and len(lines) > self._retention_max_lines:
+                # Keep newest by original order
+                lines = lines[-self._retention_max_lines:]
+            tmp = self._local_path.with_suffix('.tmp')
+            tmp.write_text("\n".join(lines) + ("\n" if lines else ""), encoding='utf-8')
+            tmp.replace(self._local_path)
+        except Exception as e:
+            logger.warning(f"Retention prune failed: {e}")
     def _write_local(self, doc: Dict[str, Any]):
         self._local_path.parent.mkdir(parents=True, exist_ok=True)
         with self._local_path.open("a", encoding="utf-8") as f:
@@ -89,11 +144,28 @@ class ReceiptStore:
                     self._last_error = str(ee)
                 return hop
         else:
-            existing = self.get_chain(trace_id)
-            hop = len(existing)
+            # Prune first so hop assignment only considers retained entries
+            self._prune_local()
+            hop = 0
+            if self._local_path.exists():
+                try:
+                    with self._local_path.open('r', encoding='utf-8') as f:
+                        for line in f:
+                            try:
+                                doc = json.loads(line)
+                            except Exception:
+                                continue
+                            if doc.get('trace_id') == trace_id:
+                                h = doc.get('hop')
+                                if isinstance(h, int) and h >= hop:
+                                    hop = h + 1
+                except Exception:
+                    hop = 0
             receipt["hop"] = hop
             self._write_local(receipt)
             self._last_write_ts = receipt.get("ts") or receipt.get("created_at")
+            # Final prune to enforce line count if needed
+            self._prune_local()
             return hop
     def get_chain(self, trace_id: str) -> List[Dict[str, Any]]:
         results: List[Dict[str, Any]] = []
@@ -128,4 +200,5 @@ class ReceiptStore:
             "healthy": bool(self._client and self._healthy),
             "last_write": self._last_write_ts,
             "last_error": self._last_error,
+            "firestore_ttl_days": getattr(self, "_firestore_ttl_days", 0),
         }

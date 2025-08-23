@@ -85,19 +85,42 @@ class RegoPolicyEngine:
 
 
 class PolicyManager:
-    """Facade selecting either legacy HEL allowlist or Rego policy file per env.
+    """Facade selecting HEL allowlist, canned profile, or Rego policy.
 
-    Env precedence:
-      If ODIN_POLICY_REGO_PATH is set → RegoPolicyEngine
-      Else → PolicyEngine (HEL allowlist)
+    Precedence:
+      1. If ODIN_POLICY_PROFILE is set to one of (strict, medium, open) use built-in profile.
+      2. Else if ODIN_POLICY_REGO_PATH set → RegoPolicyEngine.
+      3. Else HEL allowlist.
+
+    Canned profiles (host allowlist semantics):
+      strict: only hosts in HEL_ALLOWLIST (or none if empty)
+      medium: allow common finance domains + HEL_ALLOWLIST
+      open: allow any host (pass-through) unless explicitly denied later.
     """
+    PROFILE_FINANCE_HOSTS = {"api.bank.com", "payments.bank.com"}
+
     def __init__(self):
-        rego = os.getenv("ODIN_POLICY_REGO_PATH")
+        profile = os.getenv("ODIN_POLICY_PROFILE", "").lower().strip()
+        rego = os.getenv("ODIN_POLICY_REGO_PATH") if not profile else None
+        self.profile = profile or None
+        if profile in ("strict", "medium", "open"):
+            if profile == "open":
+                # open profile: trivial pass engine
+                self._engine = _AlwaysAllowEngine()
+            else:
+                # Build allowlist: medium adds finance hosts
+                allow = []
+                env_allow = os.getenv("HEL_ALLOWLIST", "")
+                if env_allow:
+                    allow.extend([h.strip() for h in env_allow.split(",") if h.strip()])
+                if profile == "medium":
+                    allow.extend(sorted(self.PROFILE_FINANCE_HOSTS))
+                self._engine = PolicyEngine(allowlist_hosts=allow)
+            return
         if rego:
             try:
                 self._engine: Any = RegoPolicyEngine(rego, opa_bin=os.getenv("OPA_BIN", "opa"))
             except Exception as e:
-                # Fall back to HEL but record reason
                 self._engine = PolicyEngine()
                 self._rego_error = str(e)
         else:
@@ -105,5 +128,9 @@ class PolicyManager:
 
     def check_http_egress(self, host: str, tenant_key: Optional[str] = None) -> HELResult:
         return self._engine.check_http_egress(host, tenant_key=tenant_key)
+
+class _AlwaysAllowEngine:
+    def check_http_egress(self, host: str, tenant_key: Optional[str] = None) -> HELResult:
+        return HELResult(True, "OPEN:HTTP_EGRESS", ["open profile allow"])  # type: ignore
 
 __all__ = ["HELResult", "PolicyEngine", "RegoPolicyEngine", "PolicyManager"]

@@ -1,0 +1,53 @@
+name: Conformance & Spec
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch: {}
+
+jobs:
+  conformance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install mkdocs-material ruff mypy
+          pip install -e packages/odin_sdk
+      - name: Lint (ruff)
+        run: ruff check .
+      - name: Type check (mypy - ignore failures initially)
+        continue-on-error: true
+        run: mypy packages/odin_core || true
+      - name: Pytests
+        run: pytest -q
+      - name: Conformance harness
+        run: python -m conformance.harness --mode offline
+      - name: Build spec site
+        run: |
+          mkdocs build -f spec/mkdocs.yml -d site
+      - name: Upload spec artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: spec-site
+          path: site
+      - name: Helm template (basic)
+        run: |
+          helm template odin ./deploy/helm/odin-gateway --set image.repository=dummy/image --set image.tag=test > /dev/null
+      - name: Terraform validate (GCP)
+        working-directory: deploy/terraform/gcp
+        run: |
+          terraform init -backend=false
+          terraform validate
+      - name: Terraform validate (AWS)
+        working-directory: deploy/terraform/aws
+        run: |
+          terraform init -backend=false
+          terraform validate

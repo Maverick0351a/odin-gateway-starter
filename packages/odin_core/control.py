@@ -36,6 +36,9 @@ class ControlPlane:
                 "rate_limit_rpm": 0,  # 0 = unlimited
                 "audit": {"forward_receipts": False, "forward_exports": False, "sink_type": None, "sink_config": {}},
                 "status": "active",
+                # Custody: mode in {odin, byok, gcpkms, awskms, azurekv}; signer_ref holds reference (e.g. key id / public jwk)
+                "custody_mode": "odin",
+                "signer_ref": None,  # for byok: public JWK; for kms: key resource / arn / url
             }
             return self._tenant_public(tenant_id, self.data["tenants"][tenant_id])
 
@@ -48,7 +51,7 @@ class ControlPlane:
             t = self.data["tenants"].get(tenant_id)
             if not t:
                 raise ValueError("not found")
-            for k in ["name", "allowlist", "rate_limit_rpm", "audit", "status"]:
+            for k in ["name", "allowlist", "rate_limit_rpm", "audit", "status", "custody_mode", "signer_ref"]:
                 if k in fields and fields[k] is not None:
                     t[k] = fields[k]
             return self._tenant_public(tenant_id, t)

@@ -146,3 +146,85 @@ def _iso20022_back_to_openai(payload: Dict[str, Any]) -> Tuple[Dict[str, Any], D
         return tool_payload, notes
     except Exception as e:
         raise SFTError(f"Failed to map invoice.iso20022.v1 -> openai.tooluse.invoice.v1: {e}")
+
+# ---------------------------
+# 5) Healthcare: FHIR Observation (vendor) -> fhir.observation.v1
+# Minimal subset mapping (example fields): id, code, value, unit, subject (patient id), effectiveDateTime
+# ---------------------------
+@sft("health.observation.vendor.v1", "fhir.observation.v1")
+def _vendor_obs_to_fhir(payload: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    try:
+        fhir = {
+            "resourceType": "Observation",
+            "id": payload.get("observation_id"),
+            "code": {"text": payload.get("code")},
+            "valueQuantity": {
+                "value": payload.get("value"),
+                "unit": payload.get("unit"),
+            },
+            "subject": {"reference": f"Patient/{payload.get('patient_id')}"},
+            "effectiveDateTime": payload.get("effective_at"),
+        }
+        notes = {"fields_mapped": ["observation_id->id", "code->code.text", "value->valueQuantity.value", "patient_id->subject.reference"]}
+        return fhir, notes
+    except Exception as e:
+        raise SFTError(f"Failed to map health.observation.vendor.v1: {e}")
+
+@sft("health.patient.vendor.v1", "fhir.patient.v1")
+def _vendor_patient_to_fhir(payload: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    try:
+        fhir = {
+            "resourceType": "Patient",
+            "id": payload.get("patient_id"),
+            "name": [{"text": payload.get("name")}],
+            "gender": payload.get("gender"),
+            "birthDate": payload.get("birth_date"),
+        }
+        notes = {"fields_mapped": ["patient_id->id", "name->name[0].text"]}
+        return fhir, notes
+    except Exception as e:
+        raise SFTError(f"Failed to map health.patient.vendor.v1: {e}")
+
+# ---------------------------
+# 6) Insurance: ACORD claim notice vendor -> acord.claim_notice.v1 (simplified subset)
+# ---------------------------
+@sft("insurance.claim_notice.vendor.v1", "acord.claim_notice.v1")
+def _vendor_claim_notice(payload: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    try:
+        acord = {
+            "ClaimNotice": {
+                "ClaimNumber": payload.get("claim_number"),
+                "LossDate": payload.get("loss_date"),
+                "Insured": {"Name": payload.get("insured_name")},
+                "LossDescription": payload.get("description"),
+            }
+        }
+        notes = {"fields_mapped": ["claim_number->ClaimNumber", "insured_name->Insured.Name"]}
+        return acord, notes
+    except Exception as e:
+        raise SFTError(f"Failed to map insurance.claim_notice.vendor.v1: {e}")
+
+# ---------------------------
+# 7) Procurement: 3-way match skeleton (PO, receipt, invoice) -> procurement.match.v1
+# Input expects keys: po{ id, amount }, gr{ id, amount }, invoice{ id, amount }
+# ---------------------------
+@sft("procurement.match.vendor.v1", "procurement.match.v1")
+def _vendor_three_way_match(payload: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    try:
+        po = payload.get("po", {})
+        gr = payload.get("gr", {})
+        inv = payload.get("invoice", {})
+        match = {
+            "three_way_match": {
+                "po": {"id": po.get("id"), "amount": po.get("amount")},
+                "goods_receipt": {"id": gr.get("id"), "amount": gr.get("amount")},
+                "invoice": {"id": inv.get("id"), "amount": inv.get("amount")},
+                "amounts_consistent": all(
+                    a is not None and a == po.get("amount") for a in [gr.get("amount"), inv.get("amount")]
+                ),
+            }
+        }
+        notes = {"fields_mapped": ["po.id->three_way_match.po.id", "invoice.id->three_way_match.invoice.id"], "consistency": match["three_way_match"]["amounts_consistent"]}
+        return match, notes
+    except Exception as e:
+        raise SFTError(f"Failed to map procurement.match.vendor.v1: {e}")

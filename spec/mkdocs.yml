@@ -1,0 +1,23 @@
+site_name: OPE Spec
+site_description: Open Proof Envelope (OPE) Protocol Specification v1.0
+repo_url: https://github.com/Maverick0351a/odin-gateway-starter
+nav:
+  - Overview: index.md
+  - Envelope: envelope.md
+  - Receipts: receipts.md
+  - Export & Bundles: export.md
+  - Transparency: transparency.md
+  - Security Considerations: security.md
+  - Test Vectors: test-vectors.md
+theme:
+  name: material
+  features:
+    - navigation.tabs
+    - content.code.copy
+markdown_extensions:
+  - admonition
+  - codehilite
+  - toc:
+      permalink: true
+extra:
+  version: 1.0.0-draft

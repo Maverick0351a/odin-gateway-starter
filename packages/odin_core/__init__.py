@@ -8,3 +8,13 @@ from .sft import transform_payload, SFTError
 from .hel import PolicyEngine, HELResult, PolicyManager, RegoPolicyEngine
 from .receipts import build_receipt, hash_receipt
 from .firestore_log import ReceiptStore
+from .transparency import TransparencyLog
+
+__all__ = [
+    'load_or_create_private_key','public_jwk_from_private_b64','sign_bytes','verify_with_jwk',
+    'b64u_encode','b64u_decode','kid_from_public_key',
+    'cid_sha256','sha256_hex','now_ts_iso','canonical_json','gen_trace_id',
+    'transform_payload','SFTError',
+    'PolicyEngine','HELResult','PolicyManager','RegoPolicyEngine',
+    'build_receipt','hash_receipt','ReceiptStore','TransparencyLog'
+]

@@ -1,4 +1,4 @@
-import os, json, logging
+import os, json, logging, hashlib
 from typing import Optional, Dict, Any, List
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,6 +8,8 @@ from pydantic import BaseModel, Field
 import httpx
 from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST, CollectorRegistry
 import time
+from datetime import datetime, timezone
+from collections import OrderedDict
 from cryptography.hazmat.primitives import serialization
 import hmac, hashlib
 
@@ -26,7 +28,9 @@ from odin_core import (
     cid_sha256, now_ts_iso, gen_trace_id, transform_payload, SFTError,
     PolicyManager, build_receipt, ReceiptStore, b64u_encode, canonical_json
 )
+from odin_core.transparency import TransparencyLog
 from odin_core.signer import load_signer
+from odin_core.audit import audit
 try:
     from odin_core.control import ControlPlane  # direct module import
 except Exception as _cp_err:  # noqa
@@ -80,8 +84,33 @@ def _load_additional_jwks():
 
 policy_engine = PolicyManager()
 store = ReceiptStore()
+TRANSPARENCY_PATH = os.getenv("ODIN_TRANSPARENCY_LOG_PATH", "transparency.log")
+transparency_log = TransparencyLog(TRANSPARENCY_PATH)
 control_plane = ControlPlane()
 rate_limiter = control_plane.rate_limiter()
+
+# ---- Replay Protection Configuration ----
+def _load_int_env(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except Exception:
+        return default
+
+def _current_skew_limit() -> int:
+    return _load_int_env("ODIN_MAX_SKEW_SECONDS", 300)
+
+def _current_replay_cache_size() -> int:
+    return _load_int_env("ODIN_REPLAY_CACHE_SIZE", 10000)
+_replay_cache: "OrderedDict[str, float]" = OrderedDict()  # message_digest -> first_seen_epoch
+
+def _replay_cache_add(digest: str):
+    _replay_cache[digest] = time.time()
+    if len(_replay_cache) > _current_replay_cache_size():
+        # pop oldest
+        _replay_cache.popitem(last=False)
+
+def _is_replay(digest: str) -> bool:
+    return digest in _replay_cache
 
 ADMIN_TOKEN = os.getenv("ODIN_ADMIN_TOKEN")
 REQUIRE_API_KEY = os.getenv("ODIN_REQUIRE_API_KEY", "0").lower() in ("1", "true", "yes")
@@ -170,7 +199,15 @@ def jwks():
 
 @app.get("/healthz")
 def healthz():
-    return {"status": "ok", "kid": GATEWAY_KID, "receipts": store.health()}
+    return {"status": "ok", "kid": GATEWAY_KID, "receipts": store.health(), "transparency": transparency_log.snapshot()}
+
+@app.get("/v1/transparency/checkpoint")
+def transparency_checkpoint():
+    ckpt = transparency_log.checkpoint(lambda msg: _signer.sign(msg))
+    # embed kid for provenance
+    if ckpt.get("signature"):
+        ckpt["kid"] = GATEWAY_KID
+    return ckpt
 
 # Convenience alias some platforms expect /health
 @app.get("/health")
@@ -217,8 +254,24 @@ def export_chain(trace_id: str):
     bundle_cid = cid_sha256(bundle_bytes)
     # Gateway signs the export bundle using active signer abstraction
     sig = _signer.sign(f"{bundle_cid}|{trace_id}|{exported_at}".encode("utf-8"))
-    resp = {"bundle": bundle, "bundle_cid": bundle_cid, "bundle_signature": sig}
-    headers = {"X-ODIN-Bundle-CID": bundle_cid, "X-ODIN-KID": GATEWAY_KID, "X-ODIN-Bundle-Signature": sig}
+    # Append bundle CID to transparency log (separate from receipt hashes) and provide inclusion proof
+    leaf_index = transparency_log.add_leaf(hashlib.sha256(bundle_cid.encode('utf-8')).hexdigest())
+    root = transparency_log.root()
+    proof_path = transparency_log.audit_path(leaf_index)
+    resp = {
+        "bundle": bundle,
+        "bundle_cid": bundle_cid,
+        "bundle_signature": sig,
+        "transparency": {
+            "leaf_index": leaf_index,
+            "tree_size": transparency_log.size(),
+            "root": root,
+            "audit_path": proof_path,
+            "leaf_hash": hashlib.sha256(bundle_cid.encode('utf-8')).hexdigest(),
+        },
+    }
+    audit("export_bundle", trace_id=trace_id, bundle_cid=bundle_cid, leaf_index=leaf_index, tree_size=transparency_log.size(), root=root)
+    headers = {"X-ODIN-Bundle-CID": bundle_cid, "X-ODIN-KID": GATEWAY_KID, "X-ODIN-Bundle-Signature": sig, "X-ODIN-Transparency-Root": root or ""}
     return JSONResponse(jsonable_encoder(resp), headers=headers)
 
 @app.post("/v1/odin/envelope")
@@ -238,6 +291,25 @@ async def accept_envelope(ope: OPE, request: Request):
 
     message = f"{cid}|{ope.trace_id}|{ope.ts}".encode("utf-8")
     sender_jwk = None
+
+    # Timestamp skew enforcement (replay hardening)
+    try:
+        ts_dt = datetime.fromisoformat(ope.ts)
+        if ts_dt.tzinfo is None:
+            # assume UTC if naive
+            ts_dt = ts_dt.replace(tzinfo=timezone.utc)
+    except Exception:
+        REQS.labels(status="bad_ts").inc()
+        raise HTTPException(400, detail="Invalid ts format (expected ISO 8601)")
+    now_utc = datetime.now(timezone.utc)
+    delta = (now_utc - ts_dt).total_seconds()
+    max_skew = _current_skew_limit()
+    if delta > max_skew:
+        REQS.labels(status="ts_past").inc()
+        raise HTTPException(400, detail="Timestamp too far in past")
+    if delta < -max_skew:
+        REQS.labels(status="ts_future").inc()
+        raise HTTPException(400, detail="Timestamp too far in future")
 
     if ope.sender and ope.sender.jwk:
         sender_jwk = ope.sender.jwk
@@ -265,6 +337,13 @@ async def accept_envelope(ope: OPE, request: Request):
     if not verify_with_jwk(sender_jwk, message, ope.signature):
         REQS.labels(status="bad_sig").inc()
         raise HTTPException(400, detail="Invalid signature")
+
+    # Replay detection (exact same signed context)
+    signed_context_hash = hashlib.sha256(message + ope.signature.encode('utf-8')).hexdigest()
+    if _is_replay(signed_context_hash):
+        REQS.labels(status="replay").inc()
+        raise HTTPException(409, detail="Replay detected (duplicate signed envelope)")
+    _replay_cache_add(signed_context_hash)
 
     try:
         normalized_payload, sft_notes = transform_payload(ope.payload, ope.payload_type, ope.target_type)
@@ -330,6 +409,28 @@ async def accept_envelope(ope: OPE, request: Request):
 
     chain = store.get_chain(ope.trace_id)
     prev_hash = chain[-1].get("receipt_hash") if chain else None
+    # Identify policy engine type for provenance (HEL vs REGO or other) if available
+    engine_type = getattr(policy_engine, 'active_engine', None)
+    if engine_type and not isinstance(engine_type, str):
+        # some manager may expose object; derive name
+        engine_type = getattr(engine_type, '__class__', type('x',(object,),{})).__name__.lower()
+    # Optional tenant dual-signature (BYOK) support: client can submit X-ODIN-Tenant-Signature over pattern
+    tenant_sigs = []
+    tenant_sig = request.headers.get("x-odin-tenant-signature")
+    tenant_sig_kid = request.headers.get("x-odin-tenant-kid")
+    if tenant_sig and tenant_sig_kid and tenant_ctx and tenant_ctx.get("custody_mode") == "byok":
+        pattern = f"{cid}|{normalized_cid}|{ope.trace_id}|{prev_hash or ''}"
+        tref = control_plane.get_tenant(tenant_ctx["tenant_id"]) or {}
+        signer_ref = tref.get("signer_ref") if isinstance(tref, dict) else None
+        if isinstance(signer_ref, dict):
+            try:
+                if verify_with_jwk(signer_ref, pattern.encode('utf-8'), tenant_sig):
+                    tenant_sigs.append({"kid": tenant_sig_kid, "sig": tenant_sig, "pattern": pattern})
+                else:
+                    audit("tenant_signature_invalid", tenant_id=tenant_ctx.get("tenant_id"), kid=tenant_sig_kid, trace_id=ope.trace_id)
+            except Exception:
+                audit("tenant_signature_error", tenant_id=tenant_ctx.get("tenant_id"), kid=tenant_sig_kid, trace_id=ope.trace_id)
+
     receipt = build_receipt(
         signer=_signer,
         trace_id=ope.trace_id,
@@ -339,8 +440,16 @@ async def accept_envelope(ope: OPE, request: Request):
         policy_result=policy_result,
         gateway_kid=GATEWAY_KID,
         prev_receipt_hash=prev_hash,
+        policy_engine=engine_type,
+        tenant_id=tenant_ctx.get("tenant_id") if tenant_ctx else None,
+        tenant_signatures=tenant_sigs or None,
     )
     store.add_receipt(receipt)
+    try:
+        transparency_log.add_leaf(receipt["receipt_hash"])
+    except Exception as _tl_err:  # noqa
+        logger.warning(f"transparency_log add_leaf failed: {_tl_err}")
+    audit("receipt_appended", trace_id=ope.trace_id, hop=receipt.get("hop"), receipt_hash=receipt.get("receipt_hash"))
 
     if ope.forward_url and RELAY_URL:
         try:
@@ -364,6 +473,7 @@ async def accept_envelope(ope: OPE, request: Request):
         "normalized_payload": normalized_payload,
         "sft_notes": sft_notes,
         "forwarded": forwarded,
+        "policy_engine": receipt.get("policy_engine"),
     }
     body_bytes = json.dumps(resp_body, sort_keys=True, separators=(",", ":")).encode("utf-8")
     resp_cid = cid_sha256(body_bytes)
@@ -400,6 +510,30 @@ def admin_list_tenants(request: Request):
     _admin_auth(request)
     return {"tenants": control_plane.list_tenants()}
 
+@app.get("/v1/admin/tenants/{tenant_id}/jwks")
+def admin_tenant_jwks(tenant_id: str, request: Request):
+    """Expose a per-tenant JWKS (public key material) for BYOK custody mode.
+
+    Current implementation returns a single-key JWKS if the tenant's custody_mode is 'byok'
+    and signer_ref is a JWK-like dict. Future: support multi-key & rotation metadata.
+    """
+    _admin_auth(request)
+    t = control_plane.get_tenant(tenant_id)
+    if not t:
+        raise HTTPException(404, detail="not found")
+    if t.get("custody_mode") != "byok" or not isinstance(t.get("signer_ref"), dict):
+        return {"keys": []}
+    ref = dict(t["signer_ref"])
+    # Ensure required JWK fields minimally present
+    for k in ("kty","crv","x"):
+        if k not in ref:
+            raise HTTPException(400, detail="signer_ref missing jwk field")
+    # Attach kid if provided
+    kid = ref.get("kid") or f"{tenant_id}-byok"
+    ref["kid"] = kid
+    ref.setdefault("use", "sig")
+    return {"keys": [ref]}
+
 @app.post("/v1/admin/tenants")
 async def admin_create_tenant(request: Request):
     _admin_auth(request)
@@ -410,6 +544,7 @@ async def admin_create_tenant(request: Request):
         raise HTTPException(400, detail="tenant_id required")
     try:
         t = control_plane.create_tenant(tenant_id, name=name)
+        audit("tenant_created", tenant_id=tenant_id)
         return t
     except ValueError as e:
         raise HTTPException(400, detail=str(e))
@@ -428,6 +563,7 @@ async def admin_update_tenant(tenant_id: str, request: Request):
     body = await request.json()
     try:
         t = control_plane.update_tenant(tenant_id, **body)
+        audit("tenant_updated", tenant_id=tenant_id, fields=list(body.keys()))
         return t
     except ValueError as e:
         raise HTTPException(404, detail=str(e))
@@ -438,6 +574,7 @@ def admin_delete_tenant(tenant_id: str, request: Request):
     ok = control_plane.delete_tenant(tenant_id)
     if not ok:
         raise HTTPException(404, detail="not found")
+    audit("tenant_deleted", tenant_id=tenant_id)
     return {"deleted": True}
 
 @app.post("/v1/admin/tenants/{tenant_id}/keys")
@@ -445,6 +582,7 @@ def admin_issue_key(tenant_id: str, request: Request):
     _admin_auth(request)
     try:
         rec = control_plane.issue_key(tenant_id)
+        audit("key_issued", tenant_id=tenant_id, key=rec.get("key"))
         return rec
     except ValueError:
         raise HTTPException(404, detail="tenant not found")
@@ -455,4 +593,5 @@ def admin_revoke_key(tenant_id: str, key: str, request: Request):
     ok = control_plane.revoke_key(tenant_id, key)
     if not ok:
         raise HTTPException(404, detail="not found")
+    audit("key_revoked", tenant_id=tenant_id, key=key)
     return {"revoked": True}

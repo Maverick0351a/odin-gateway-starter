@@ -106,3 +106,55 @@ def test_tampered_export_detection(neg_client):
         assert chain_ok is False
 
     # Control plane file left for potential inspection; removal handled by fixture scope end
+
+def test_replay_detection(neg_client):
+    # Set tighter skew to speed test
+    os.environ['ODIN_MAX_SKEW_SECONDS'] = '300'
+    # Issue tenant + key
+    neg_client.post('/v1/admin/tenants', headers={'x-admin-token':'neg-admin'}, json={'tenant_id':'replay'})
+    rec = neg_client.post('/v1/admin/tenants/replay/keys', headers={'x-admin-token':'neg-admin'}).json()
+    key, secret = rec['key'], rec['secret']
+    priv = Ed25519PrivateKey.generate()
+    trace = 'trace-'+uuid.uuid4().hex[:8]
+    env = build_env(priv, trace, {'foo':1})
+    # Compute correct MAC
+    msg = f"{env['cid']}|{env['trace_id']}|{env['ts']}".encode()
+    mac = hmac.new(secret.encode(), msg, hashlib.sha256).digest()
+    mac_b64u = b64u(mac)
+    r1 = neg_client.post('/v1/odin/envelope', json=env, headers={'X-ODIN-API-Key': key, 'X-ODIN-API-MAC': mac_b64u})
+    assert r1.status_code == 200
+    # Replay exact same envelope (should 409)
+    r2 = neg_client.post('/v1/odin/envelope', json=env, headers={'X-ODIN-API-Key': key, 'X-ODIN-API-MAC': mac_b64u})
+    assert r2.status_code == 409
+
+def test_timestamp_skew_rejected(neg_client):
+    # Reduce skew window
+    os.environ['ODIN_MAX_SKEW_SECONDS'] = '1'
+    neg_client.post('/v1/admin/tenants', headers={'x-admin-token':'neg-admin'}, json={'tenant_id':'skew'})
+    rec = neg_client.post('/v1/admin/tenants/skew/keys', headers={'x-admin-token':'neg-admin'}).json()
+    key, secret = rec['key'], rec['secret']
+    priv = Ed25519PrivateKey.generate()
+    # Build env with old timestamp
+    from datetime import datetime, timezone, timedelta
+    old_ts = (datetime.now(timezone.utc) - timedelta(seconds=10)).isoformat()
+    payload = {'val':3}
+    import json as _json
+    payload_bytes = _json.dumps(payload, sort_keys=True, separators=(',',':')).encode()
+    cid = 'sha256:' + hashlib.sha256(payload_bytes).hexdigest()
+    trace_id = 'trace-'+uuid.uuid4().hex[:8]
+    msg_plain = f"{cid}|{trace_id}|{old_ts}".encode()
+    sig = priv.sign(msg_plain)
+    pub = priv.public_key().public_bytes(encoding=serialization.Encoding.Raw, format=serialization.PublicFormat.Raw)
+    env = {
+        'trace_id': trace_id,
+        'ts': old_ts,
+        'sender': {'kid': 'skew-sender', 'jwk': {'kty':'OKP','crv':'Ed25519','x': b64u(pub),'kid':'skew-sender'}},
+        'payload': payload,
+        'payload_type': 'invoice.vendor.v1',
+        'target_type': 'invoice.iso20022.v1',
+        'cid': cid,
+        'signature': b64u(sig)
+    }
+    mac = hmac.new(secret.encode(), msg_plain, hashlib.sha256).digest(); mac_b64u = b64u(mac)
+    r = neg_client.post('/v1/odin/envelope', json=env, headers={'X-ODIN-API-Key': key, 'X-ODIN-API-MAC': mac_b64u})
+    assert r.status_code == 400
