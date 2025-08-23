@@ -48,10 +48,14 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: spec-site
-          path: site
+          # mkdocs build with -f spec/mkdocs.yml resolves relative output path under the spec/ directory
+          path: spec/site
       - name: Helm template (basic)
         run: |
           helm template odin ./deploy/helm/odin-gateway --set image.repository=dummy/image --set image.tag=test > /dev/null
+      # Terraform CLI is not preinstalled on GitHub-hosted runners; install before validate steps
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
       - name: Terraform validate (GCP)
         working-directory: deploy/terraform/gcp
         run: |
