@@ -1020,6 +1020,26 @@ Passing all steps qualifies commit for **ODIN Verified** status. (Badge automati
 ## Contributing
 PRs & issues welcome. Run tests (`python -m pytest -q`) before submitting. Please keep receipts & cryptographic semantics backwards‑compatible; if you need to break them, add a new versioned target type or receipt field while preserving old behavior.
 
+### Dev Hygiene Hooks (optional but recommended)
+Install git hooks to auto-fix style (Ruff) and catch issues early:
+
+```bash
+pip install pre-commit
+pre-commit install               # pre-commit: ruff (fix), ruff-format, whitespace checks
+pre-commit install --hook-type pre-push  # pre-push: mypy type check
+```
+
+Hooks included:
+* Ruff lint (auto-fix) & format
+* mypy (on push)
+* Trailing whitespace / EOF fixer
+* Large file guard (>300KB added)
+
+Update hooks after editing `.pre-commit-config.yaml`:
+```bash
+pre-commit autoupdate
+```
+
 ---
 
 ## License
