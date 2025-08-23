@@ -4,12 +4,17 @@ import os
 import pathlib
 import random
 import time
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
 
-try:  # runtime import; types optionally ignored via mypy config section
-    from google.cloud import firestore  # type: ignore
-except Exception:  # pragma: no cover - import guard
-    firestore = None  # type: ignore
+if TYPE_CHECKING:  # for type checkers only; optional dependency
+    from google.cloud import firestore  # pragma: no cover
+
+# Runtime optional import
+try:  # optional dependency; may be absent in minimal env
+    from google.cloud import firestore as _firestore
+except Exception:  # pragma: no cover
+    _firestore = None
+firestore = _firestore  # runtime alias (may be None)
 logger = logging.getLogger("odin.firestore")
 
 class ReceiptStore:

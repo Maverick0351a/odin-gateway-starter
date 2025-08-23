@@ -29,9 +29,11 @@ spec:
                 secretKeyRef:
                   name: {{ include "odin-gateway.fullname" . }}-secrets
                   key: gateway-kid
-          {{- range $k, $v in .Values.env }}
+          {{- with .Values.env }}
+          {{- range $k, $v := . }}
             - name: {{ $k }}
               value: "{{ $v }}"
+          {{- end }}
           {{- end }}
           ports:
             - containerPort: 8080

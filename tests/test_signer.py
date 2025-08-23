@@ -1,8 +1,7 @@
 import base64
 import os
 
-import pytest
-from odin_core.signer import FileKeySigner, load_signer
+from odin_core.signer import FileKeySigner
 
 
 def test_file_signer_deterministic_kid_and_signature():
@@ -19,9 +18,3 @@ def test_file_signer_deterministic_kid_and_signature():
     assert jwk["kty"] == "OKP" and jwk["crv"] == "Ed25519" and jwk["kid"] == signer1.kid()
 
 
-@pytest.mark.skipif(os.getenv("ODIN_SIGNER_BACKEND") != "gcpkms", reason="gcpkms backend not active")
-def test_gcpkms_signer_smoke():
-    # Requires ODIN_SIGNER_BACKEND=gcpkms and ODIN_GCP_KMS_KEY set with valid credentials.
-    signer = load_signer()
-    sig = signer.sign(b"probe")
-    assert isinstance(sig, str) and len(sig) > 40  # base64url Ed25519 signature ~88 chars

@@ -115,7 +115,7 @@ sequenceDiagram
 
 | Var | Purpose | Example / Notes |
 |-----|---------|-----------------|
-| `ODIN_SIGNER_BACKEND` | Signer backend selector | `file` (default) – options: `gcpkms`, `awskms`, `azurekv` (experimental) |
+| `ODIN_SIGNER_BACKEND` | Signer backend selector | `file` (only active). Cloud backends (gcpkms, awskms, azurekv) temporarily disabled. |
 | `ODIN_GCP_KMS_KEY` | Full resource name of Ed25519 KMS key version (gcpkms backend) | `projects/<p>/locations/<l>/keyRings/<r>/cryptoKeys/<k>/cryptoKeyVersions/1` |
 | `ODIN_AWS_KMS_KEY_ID` | AWS KMS key id or ARN for ED25519 key (awskms backend) | `arn:aws:kms:us-east-1:123456789012:key/uuid` |
 | `ODIN_AZURE_KEY_ID` | Azure Key Vault key identifier (versioned) for Ed25519 key | `https://<vault>.vault.azure.net/keys/<name>/<version>` |
@@ -196,7 +196,7 @@ curl -s -X PATCH http://127.0.0.1:8080/v1/admin/tenants/acme \
 Custody modes:
 * `odin` (default): gateway-managed key signs receipts
 * `byok`: tenant supplies public JWK (future: tenant co-sign receipts)
-* `gcpkms` / `awskms` / `azurekv`: reference cloud key id/arn/url in `signer_ref`
+* (Cloud backends disabled) previously: `gcpkms` / `awskms` / `azurekv` referenced cloud key id/arn/url in `signer_ref`
 
 Roadmap: per-tenant JWKS exposure & dual-sign receipts for BYOK tenants.
 
@@ -956,9 +956,7 @@ opa eval -I -f pretty -d policies/egress_allowlist.rego 'data.odin.policy' <<< '
 
 ## Security Notes
 * Keys: Gateway Ed25519 private key (seed) is a 32‑byte secret; store outside repo (env / secret manager). Rotate by issuing a new `KID` and keeping the old public key in `ODIN_ADDITIONAL_PUBLIC_JWKS` during migration.
-* KMS: When using `ODIN_SIGNER_BACKEND=gcpkms`, the private key material never leaves Cloud KMS; only signatures are returned. Ensure the service account has `cloudkms.cryptoKeyVersions.useToSign`.
-* AWS KMS: With `ODIN_SIGNER_BACKEND=awskms` the gateway signs via AWS KMS (key spec `ECC_ED25519`). IAM role needs `kms:Sign` and `kms:GetPublicKey`.
-* Azure KV: With `ODIN_SIGNER_BACKEND=azurekv` the gateway uses Key Vault (Ed25519 key) via `DefaultAzureCredential`; assign `keys/sign` and `keys/get` permissions.
+* Cloud signer backends (gcpkms, awskms, azurekv) are currently disabled in this revision to simplify local development. Refer to earlier commits for their implementation details; they can be reinstated when needed.
 * Policy: Rego evaluation failures fall back to deny with a `rego_error` reason (fail closed). Keep policy minimal and test with `opa eval` before deployment.
 * Signed Contexts: Envelopes sign `<cid>|<trace_id>|<ts>`; export bundles sign `<bundle_cid>|<trace_id>|<exported_at>` binding content + lineage + freshness.
 * Tamper Evidence: Receipts are hash‑linked (`prev_receipt_hash`); altering history breaks the chain.

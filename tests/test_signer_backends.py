@@ -29,22 +29,4 @@ def test_load_signer_unknown_backend(monkeypatch):
         signer_mod.load_signer()
 
 
-def test_load_signer_gcp_missing_key(monkeypatch):
-    monkeypatch.setenv('ODIN_SIGNER_BACKEND', 'gcpkms')
-    monkeypatch.delenv('ODIN_GCP_KMS_KEY', raising=False)
-    with pytest.raises(ValueError):
-        signer_mod.load_signer()
-
-
-def test_load_signer_aws_missing_key(monkeypatch):
-    monkeypatch.setenv('ODIN_SIGNER_BACKEND', 'awskms')
-    monkeypatch.delenv('ODIN_AWS_KMS_KEY_ID', raising=False)
-    with pytest.raises(ValueError):
-        signer_mod.load_signer()
-
-
-def test_load_signer_azure_missing_key(monkeypatch):
-    monkeypatch.setenv('ODIN_SIGNER_BACKEND', 'azurekv')
-    monkeypatch.delenv('ODIN_AZURE_KEY_ID', raising=False)
-    with pytest.raises(ValueError):
-        signer_mod.load_signer()
+## Removed cloud backend tests (gcpkms, awskms, azurekv) while those implementations are disabled.

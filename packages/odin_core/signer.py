@@ -1,9 +1,11 @@
-"""Signer abstraction for pluggable key custody backends.
+"""Signer abstraction (current implementation: local file/seed Ed25519).
 
-Phase 2 introduces external KMS / HSM support. This initial commit only
-implements the existing file/seed based Ed25519 signer behind a common
-interface so the gateway code paths can be refactored without behavior
-change.
+Cloud KMS / HSM backends (gcpkms, awskms, azurekv) were experimental and are
+temporarily removed to reduce optional dependency complexity while those
+integrations are not in active use. The factory will currently only return
+``FileKeySigner``. Attempting to select another backend raises ``ValueError``.
+
+Future reinstatement can restore the previous classes (see git history).
 """
 from __future__ import annotations
 
@@ -58,164 +60,10 @@ class FileKeySigner:
         return _b64(self._priv.sign(message))
 
 
-class GCPKMSSigner:
-    """Ed25519 signer using Google Cloud KMS.
-
-    Env vars:
-      ODIN_GCP_KMS_KEY   : projects/<p>/locations/<l>/keyRings/<r>/cryptoKeys/<k>/cryptoKeyVersions/<v>
-      ODIN_GATEWAY_KID   : (optional) explicit kid; else derive from KMS public key
-
-    Notes:
-      - Requires service account with Cloud KMS sign permission.
-      - Ed25519 keys must be created in KMS (purpose: ASYMMETRIC_SIGN, algorithm: ED25519)."""
-    def __init__(self, key_name: str):
-        from google.cloud import kms_v1
-        self._client = kms_v1.KeyManagementServiceClient()
-        self._key_name = key_name
-        # Fetch public key
-        pk = self._client.get_public_key(request={"name": key_name})
-        # KMS returns PEM; extract raw from base64 inside header/footer for Ed25519 SubjectPublicKeyInfo
-        import base64
-        pem = pk.pem.encode()
-        b64 = b"".join(line.strip() for line in pem.splitlines() if b"BEGIN" not in line and b"END" not in line)
-        der = base64.b64decode(b64)
-        # Parse SubjectPublicKeyInfo to raw 32 bytes (simple ASN.1 slice for Ed25519)
-        # Ed25519 SPKI structure: SEQ { SEQ { OID 1.3.101.112 }, BIT STRING (raw key) }
-        # Crude parse: last 32 bytes are the raw key (safe for Ed25519 SPKI minimal form)
-        raw = der[-32:]
-        self._raw_pub = raw
-        self._kid = os.getenv("ODIN_GATEWAY_KID") or self._derive_kid()
-
-    def _derive_kid(self) -> str:
-        import hashlib
-        return f"kms-ed25519-{hashlib.sha256(self._raw_pub).hexdigest()[:16]}"
-
-    def kid(self) -> str:
-        return self._kid
-
-    def public_jwk(self) -> Dict[str, Any]:
-        return {"kty": "OKP", "crv": "Ed25519", "x": b64u_encode(self._raw_pub), "kid": self._kid}
-
-    def sign(self, message: bytes) -> str:
-            """Sign bytes using Google Cloud KMS Ed25519 key version.
-
-            KMS performs raw Ed25519 signing (no hashing)."""
-            from .crypto import b64u_encode as _b64
-            req = {"name": self._key_name, "data": message}
-            resp = self._client.asymmetric_sign(request=req)
-            return _b64(resp.signature)
-
-
 def load_signer() -> Signer:
-    """Factory selecting signer backend via ODIN_SIGNER_BACKEND.
-
-    Backends:
-      file   – local seed (default)
-      gcpkms – Google Cloud KMS Ed25519 key (needs ODIN_GCP_KMS_KEY)
-    """
+    """Factory selecting signer backend via ``ODIN_SIGNER_BACKEND`` (only 'file')."""
     backend = os.getenv("ODIN_SIGNER_BACKEND", "file").lower()
     if backend == "file":
         return FileKeySigner()
-    if backend == "gcpkms":
-        key = os.getenv("ODIN_GCP_KMS_KEY")
-        if not key:
-            raise ValueError("ODIN_GCP_KMS_KEY required for gcpkms backend")
-        return GCPKMSSigner(key)
-    if backend == "awskms":
-        key_id = os.getenv("ODIN_AWS_KMS_KEY_ID")
-        if not key_id:
-            raise ValueError("ODIN_AWS_KMS_KEY_ID required for awskms backend")
-        return AWSKMSSigner(key_id)
-    if backend == "azurekv":
-        key_id = os.getenv("ODIN_AZURE_KEY_ID")
-        if not key_id:
-            raise ValueError("ODIN_AZURE_KEY_ID required for azurekv backend")
-        return AzureKVSigner(key_id)
     raise ValueError(f"Unsupported signer backend '{backend}'")
-
-class AWSKMSSigner:
-    """Ed25519 signer using AWS KMS (requires a key with KEY_SPEC=ECC_ED25519 and SIGN_VERIFY)."""
-    def __init__(self, key_id: str):
-        import hashlib
-
-        import boto3
-        self._client = boto3.client("kms")
-        self._key_id = key_id
-        desc = self._client.describe_key(KeyId=key_id)["KeyMetadata"]
-        if desc.get("KeySpec") not in ("ECC_ED25519", "ED25519"):  # AWS uses ECC_ED25519
-            raise ValueError("AWS KMS key must be ED25519/ECC_ED25519")
-        pub = self._client.get_public_key(KeyId=key_id)
-        # AWS returns DER SubjectPublicKeyInfo in 'PublicKey'
-        der = pub["PublicKey"]
-        raw = der[-32:]  # Ed25519 raw public key at end
-        self._raw_pub = raw
-        self._kid = os.getenv("ODIN_GATEWAY_KID") or f"aws-ed25519-{hashlib.sha256(raw).hexdigest()[:16]}"
-
-    def kid(self) -> str:
-        return self._kid
-
-    def public_jwk(self) -> Dict[str, Any]:
-        return {"kty": "OKP", "crv": "Ed25519", "x": b64u_encode(self._raw_pub), "kid": self._kid}
-
-    def sign(self, message: bytes) -> str:
-        # For ED25519, KMS signs raw message; set SigningAlgorithm to EDDSA
-        from .crypto import b64u_encode as _b64
-        resp = self._client.sign(KeyId=self._key_id, Message=message, SigningAlgorithm="EDDSA", MessageType="RAW")
-        return _b64(resp["Signature"])
-
-class AzureKVSigner:
-    """Ed25519 signer using Azure Key Vault.
-
-    Requires azure-identity and azure-keyvault-keys packages when backend selected.
-    """
-    def __init__(self, key_id: str):
-        from urllib.parse import urlparse
-
-        from azure.identity import DefaultAzureCredential  # type: ignore
-        from azure.keyvault.keys import KeyClient  # type: ignore
-        from azure.keyvault.keys.crypto import CryptographyClient  # type: ignore
-        self._key_id = key_id
-        cred = DefaultAzureCredential()
-        parsed = urlparse(key_id)
-        vault_url = f"{parsed.scheme}://{parsed.netloc}"
-        kc = KeyClient(vault_url=vault_url, credential=cred)
-        parts = parsed.path.strip('/').split('/')
-        # /keys/<name>/<version?>
-        name = parts[1] if len(parts) > 1 else None
-        if not name:
-            raise ValueError("Invalid Azure key id path")
-        version = parts[2] if len(parts) > 2 else None
-        key_bundle = kc.get_key(name, version=version)
-        # Extract base64url 'x' coordinate (Ed25519 raw key) from bundle
-        self._raw_pub_b64: str = getattr(getattr(key_bundle, "key", key_bundle), "x", "")
-        from base64 import urlsafe_b64decode
-        raw: bytes
-        try:
-            padded = self._raw_pub_b64 + "==="
-            raw = urlsafe_b64decode(padded)
-        except Exception:
-            raw = b""
-        if len(raw) == 32:
-            self._raw_pub_bytes = raw
-        else:  # fallback slice
-            self._raw_pub_bytes = raw[-32:] if len(raw) > 32 else b""
-        self._crypto = CryptographyClient(key_bundle.id, credential=cred)
-        import hashlib
-        self._kid = os.getenv("ODIN_GATEWAY_KID") or f"azure-ed25519-{hashlib.sha256(self._raw_pub_bytes).hexdigest()[:16]}"
-
-    def kid(self) -> str:
-        return self._kid
-
-    def public_jwk(self) -> Dict[str, Any]:
-        if not self._raw_pub_bytes:
-            raise RuntimeError("AzureKVSigner missing raw public key bytes")
-        return {"kty": "OKP", "crv": "Ed25519", "x": b64u_encode(self._raw_pub_bytes), "kid": self._kid}
-
-    def sign(self, message: bytes) -> str:
-        from azure.keyvault.keys.crypto import SignatureAlgorithm  # type: ignore
-
-        from .crypto import b64u_encode as _b64
-        resp = self._crypto.sign(SignatureAlgorithm.ED25519, message)
-        return _b64(resp.signature)
-
-__all__ = ["Signer", "FileKeySigner", "GCPKMSSigner", "AWSKMSSigner", "AzureKVSigner", "load_signer"]
+__all__ = ["Signer", "FileKeySigner", "load_signer"]
