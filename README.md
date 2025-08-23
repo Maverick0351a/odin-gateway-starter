@@ -17,6 +17,7 @@ Core capabilities:
 * SDK / CLI: Python (editable) plus early JavaScript preview
 * Cloud Run deployment scripts + smoke checks
 * Optional API key + HMAC layer (defense in depth)
+* Vertical SFT mappings: Finance (ISO20022 invoices), Healthcare (FHIR Observation/Patient), Insurance (ACORD claim notice), Procurement (3-way match) – see `docs/sft/VERTICAL_MAPPINGS.md`
 
 Start by opening **`AGENT.md`** and telling Copilot Chat:
 > Follow AGENT.md from Task 0. Ask me for any missing env vars.
@@ -26,23 +27,33 @@ Start by opening **`AGENT.md`** and telling Copilot Chat:
 
 ---
 
+## Glossary
+
+* **OPE (Open Proof Envelope)** – Signed, canonical JSON envelope binding `cid`, `trace_id`, and timestamp providing immutable lineage across hops.
+* **CID (Content Identifier)** – `sha256:<hex>` over canonical JSON of the (possibly normalized) payload; stable content hash used for signing & linkage.
+* **SFT (Semantic Format Transform)** – Registry-driven mapping that normalizes vendor / tool output schemas into versioned canonical target types (e.g. tool-use → `invoice.iso20022.v1`).
+* **HEL (Host Egress Limitation)** – Policy layer (allowlist / profile / Rego) enforcing which outbound hosts a payload may be forwarded to.
+
+---
+
 ## Table of Contents
 
-1. [Architecture Snapshot](#-architecture-snapshot)
-2. [Key Environment Variables](#-key-environment-variables)
-3. [Control Plane & Admin API](#-control-plane--admin-api)
-4. [Verification Surfaces](#-verification-surfaces)
-5. [Quick Start](#-quick-start-python-sdk--gateway)
-6. [Cloud Run Deployment](#-cloud-run-deployment)
-7. [CLI Reference (Python)](#-cli-reference-python-sdk)
-8. [JS / TypeScript SDK](#-js--typescript-sdk)
-9. [Tests / CI](#-tests--ci)
-10. [Project Layout](#-project-layout)
-11. [Export & Verification (Manual)](#-export--verification-manual)
-12. [Hosted Verify](#-hosted-verify)
-13. [Recipes](#-recipes)
-14. [Contributing](#-contributing)
-15. [License](#-license)
+1. [Glossary](#glossary)
+2. [Architecture Snapshot](#architecture-snapshot)
+3. [Key Environment Variables](#key-environment-variables)
+4. [Control Plane & Admin API](#control-plane--admin-api)
+5. [Verification Surfaces](#verification-surfaces)
+6. [Quick Start](#quick-start-python-sdk--gateway)
+7. [Cloud Run Deployment](#cloud-run-deployment)
+8. [CLI Reference (Python)](#cli-reference-python-sdk)
+9. [JS / TypeScript SDK](#js--typescript-sdk)
+10. [Tests / CI](#tests--ci)
+11. [Project Layout](#project-layout)
+12. [Export & Verification (Manual)](#export--verification-manual)
+13. [Hosted Verify](#hosted-verify)
+14. [Recipes](#recipes)
+15. [Contributing](#contributing)
+16. [License](#license)
 
 ---
 
@@ -57,7 +68,7 @@ High-level flow (summary): Signed envelopes in, transformed + policy‑checked, 
 2. Gateway resolves sender JWK (inline or cache) & verifies signature.
 3. SFT maps vendor schema → canonical target (e.g. `openai.tooluse.invoice.v1` → `invoice.iso20022.v1`).
 4. HEL policy validates optional `forward_url` host (per API key allowlist).
-5. Receipt formed: includes normalized CID, linkage (`prev_receipt_hash`), policy result, gateway signature.
+5. Receipt formed: includes normalized CID, linkage (`prev_receipt_hash`), policy result, `policy_engine` label, gateway signature.
 6. Receipt persisted (Firestore or JSONL) forming an append‑only, tamper‑evident chain.
 7. (Optional) Relay forwards normalized payload externally.
 8. Gateway signs response `<response_cid>|<trace_id>|<receipt_ts>`; provenance headers returned.
@@ -65,7 +76,37 @@ High-level flow (summary): Signed envelopes in, transformed + policy‑checked, 
 
 </details>
 
-Export endpoint: `/v1/receipts/export/{trace_id}` returns a signed bundle; clients recompute bundle CID & verify signature via JWKS.
+Export endpoint: `/v1/receipts/export/{trace_id}` returns a signed bundle; clients recompute bundle CID & verify signature via JWKS. Transparency log root (experimental) available via `/healthz` for append-only monitoring.
+
+### Sequence Diagram (Mermaid)
+
+```mermaid
+sequenceDiagram
+	autonumber
+	participant S as Sender (SDK/CLI)
+	participant G as Gateway (FastAPI)
+	participant P as Policy (HEL/Rego)
+	participant R as Relay (optional)
+	participant L as Receipts Log (Firestore/JSONL)
+	participant V as Verify UI (Dashboard)
+
+	S->>S: Canonicalize JSON, CID=sha256(...)
+	S->>S: Sign "<cid>|<trace_id>|<ts>" (Ed25519)
+	S->>G: POST /v1/odin/envelope (X-ODIN-API-Key, X-ODIN-API-MAC?)
+	G->>P: Evaluate HEL/Rego policy
+	P-->>G: Policy decision (allow / deny + notes)
+	G->>G: SFT normalize payload (vendor → canonical)
+	alt forward_url present AND allowed
+		G->>R: POST normalized payload
+		R-->>G: Forwarded status
+	end
+	G->>L: Append receipt (prev_receipt_hash → receipt_hash)
+	G->>S: 200 + provenance headers
+	S->>G: GET /v1/receipts/hops/chain/{trace_id}
+	S->>G: GET /v1/receipts/export/{trace_id}
+	G-->>S: bundle + bundle_cid + bundle_signature
+	S->>V: (optional) verify via dashboard
+```
 
 ---
 
@@ -73,22 +114,34 @@ Export endpoint: `/v1/receipts/export/{trace_id}` returns a signed bundle; clien
 
 | Var | Purpose | Example / Notes |
 |-----|---------|-----------------|
-| `ODIN_SIGNER_BACKEND` | Signer backend selector (`file`) | `file` (default) – options: `gcpkms`, `awskms`, `azurekv` (experimental) |
+| `ODIN_SIGNER_BACKEND` | Signer backend selector | `file` (default) – options: `gcpkms`, `awskms`, `azurekv` (experimental) |
 | `ODIN_GCP_KMS_KEY` | Full resource name of Ed25519 KMS key version (gcpkms backend) | `projects/<p>/locations/<l>/keyRings/<r>/cryptoKeys/<k>/cryptoKeyVersions/1` |
 | `ODIN_AWS_KMS_KEY_ID` | AWS KMS key id or ARN for ED25519 key (awskms backend) | `arn:aws:kms:us-east-1:123456789012:key/uuid` |
 | `ODIN_AZURE_KEY_ID` | Azure Key Vault key identifier (versioned) for Ed25519 key | `https://<vault>.vault.azure.net/keys/<name>/<version>` |
-| `ODIN_POLICY_REGO_PATH` | Path to Rego policy file (enables Rego engine) | `policies/egress.rego` |
-| `OPA_BIN` | OPA binary name/path (when using Rego) | `opa` |
 | `ODIN_GATEWAY_PRIVATE_KEY_B64` | Base64url Ed25519 32‑byte seed for gateway signing (file backend) | Generated via `scripts/gen_keys.py` |
-| `ODIN_GATEWAY_KID` | Key ID exposed in JWKS and headers (can be auto‑derived) | Any unique string (e.g. `gw-2025-01`) |
+| `ODIN_GATEWAY_KID` | Key ID exposed in JWKS and headers (can be auto‑derived) | `gw-2025-01` |
 | `ODIN_ADDITIONAL_PUBLIC_JWKS` | JSON string of legacy/extra JWKs for verification | `{"keys":[...]}` |
-| `RELAY_URL` | If set, gateway will POST normalized payloads to relay | `http://relay:8090` |
+| `ODIN_POLICY_REGO_PATH` | Path to Rego policy file (enables Rego engine) | `policies/egress.rego` |
+| `ODIN_POLICY_PROFILE` | Built-in policy profile overrides rego/allowlist (`strict`,`medium`,`open`) | `medium` |
+| `OPA_BIN` | OPA binary name/path (when using Rego) | `opa` |
+| `ODIN_MAX_SKEW_SECONDS` | Max allowed clock skew / age (seconds) for incoming envelope `ts` | `120` (default) |
+| `ODIN_REPLAY_CACHE_SIZE` | Approximate in‑memory LRU size for recent message signatures to block replays | `5000` (default) |
+| `HEL_ALLOWLIST` | Comma list of allowed egress hosts (HEL). For CIDRs on Cloud Run use `__SL__` instead of `/` (decoded at runtime). | `api.openai.com,postman-echo.com,10.0.0.0__SL__8` |
+| `HEL_TENANT_ALLOWLISTS` | JSON map tenant → host allowlist overrides (applied per API key) | `{"tenant-123":["postman-echo.com"]}` |
+| `RELAY_URL` | If set, gateway forwards normalized payloads to this relay | `http://relay:9090` |
+| `RELAY_ALLOWLIST` | (Relay) Comma list of allowed outbound hosts | `api.openai.com,postman-echo.com` |
 | `ODIN_API_KEY_SECRETS` | JSON map of API key → HMAC secret (legacy static mode) | `{"demo":"supersecret"}` |
 | `CONTROL_PLANE_PATH` | Path to JSON state file for tenants/keys | `control_plane.json` |
 | `ODIN_REQUIRE_API_KEY` | Force API key auth even if no static map set | `1` / `true` |
-| `ODIN_ADMIN_TOKEN` | Enables admin endpoints when set (required token) | random strong string |
-| `FIRESTORE_PROJECT` / ADC | Enables Firestore receipt backend (otherwise JSONL) | GCP project id |
-| `RECEIPT_LOG_PATH` | Override JSONL receipt log path | Defaults under working dir |
+| `ODIN_ADMIN_TOKEN` | Enables admin endpoints when set (required token) | Strong random string |
+| `FIRESTORE_PROJECT` | GCP project id; enables Firestore backend when set (ADC for auth) | `odin-ai-to` |
+| `FIRESTORE_COLLECTION` | Firestore collection name | `receipts` |
+| `ODIN_LOCAL_RECEIPTS` | Path for JSONL fallback store when Firestore not configured | `./data/odin_receipts.jsonl` |
+| `ODIN_RETENTION_MAX_LOCAL_LINES` | Prune local JSONL receipt log above this many lines (0 = unlimited) | `50000` |
+| `ODIN_RETENTION_MAX_AGE_SECONDS` | Prune local receipts older than this age (0 = unlimited) | `604800` (7 days) |
+| `ODIN_TRANSPARENCY_LOG_PATH` | File path for persistence of transparency (Merkle) log leaves | `transparency.log` |
+| `HOSTED_VERIFY_BASE_URL` | Public URL for dashboard verify service (docs/links) | `https://verify.example.com` |
+| `CORS_ALLOW_ORIGINS` | Comma list for CORS (dashboard/API) | `https://verify.example.com,https://www.example.com` |
 
 Set API key + MAC: client includes `X-ODIN-API-Key` + `X-ODIN-API-MAC` = base64url(HMAC_SHA256(secret, `<cid>|<trace_id>|<ts>`)).
 
@@ -106,7 +159,7 @@ Admin authentication: provide header `X-Admin-Token: <ODIN_ADMIN_TOKEN>`.
 | GET | `/v1/admin/tenants` | List tenants (key secrets hidden) |
 | POST | `/v1/admin/tenants` | Create tenant `{tenant_id,name}` |
 | GET | `/v1/admin/tenants/{tenant_id}` | Fetch tenant summary |
-| PATCH | `/v1/admin/tenants/{tenant_id}` | Update fields: `name`, `allowlist`, `rate_limit_rpm`, `status` |
+| PATCH | `/v1/admin/tenants/{tenant_id}` | Update fields: `name`, `allowlist`, `rate_limit_rpm`, `status`, `custody_mode`, `signer_ref` |
 | DELETE | `/v1/admin/tenants/{tenant_id}` | Delete tenant |
 | POST | `/v1/admin/tenants/{tenant_id}/keys` | Issue API key (returns secret once) |
 | POST | `/v1/admin/tenants/{tenant_id}/keys/{key}/revoke` | Revoke key |
@@ -130,6 +183,21 @@ Response (example):
 { "key": "k_abcd...", "secret": "s_xyz...", "active": true, "created_at": "2025-08-22T12:34:56Z" }
 ```
 Store `key` & `secret` securely; secret is not retrievable later.
+
+Update custody (BYOK example):
+```bash
+curl -s -X PATCH http://127.0.0.1:8080/v1/admin/tenants/acme \
+	-H "X-Admin-Token: $ODIN_ADMIN_TOKEN" \
+	-H 'Content-Type: application/json' \
+	-d '{"custody_mode":"byok","signer_ref":{"kty":"OKP","crv":"Ed25519","x":"<pub>","kid":"acme-byok-1"}}'
+```
+
+Custody modes:
+* `odin` (default): gateway-managed key signs receipts
+* `byok`: tenant supplies public JWK (future: tenant co-sign receipts)
+* `gcpkms` / `awskms` / `azurekv`: reference cloud key id/arn/url in `signer_ref`
+
+Roadmap: per-tenant JWKS exposure & dual-sign receipts for BYOK tenants.
 
 ### Using an Issued Key
 For each envelope:
@@ -166,7 +234,13 @@ Security notes:
 * Response headers: `X-ODIN-Receipt-Hash`, `X-ODIN-Response-CID`, `X-ODIN-Signature`, `X-ODIN-KID`
 * Export bundle: signed pattern assures integrity + ordering
 * Chain validation: each receipt's `prev_receipt_hash` must match prior's `receipt_hash`
-* Policy attestation (future): expose which engine (HEL or Rego) evaluated egress decision in receipt metadata.
+* Policy attestation: `policy_engine` field inside each receipt identifies HEL vs Rego evaluator
+* Policy profiles: set `ODIN_POLICY_PROFILE` to quickly toggle `strict` (explicit allowlist only), `medium` (adds finance host defaults), or `open` (allow all)
+* Transparency log (experimental): Merkle root + size exposed via `/healthz` (`transparency.root`, `transparency.size`) for append-only monitoring
+	* Persistence configurable via `ODIN_TRANSPARENCY_LOG_PATH` (if unset, in‑memory only)
+	* Signed checkpoints at `/v1/transparency/checkpoint` (tune frequency by how often you call the endpoint)
+* Compliance docs (draft): see `docs/compliance/` for Threat Model, Secure Development Policy, SOC 2 readiness checklist
+* Signed transparency checkpoints: `/v1/transparency/checkpoint` returns a signed `(root|size|ts)` pattern (see section below)
 
 ---
 
@@ -221,6 +295,36 @@ odin send --gateway-url http://127.0.0.1:8080 `
 # 6. Inspect chain + verify export
 odin chain --gateway-url http://127.0.0.1:8080 --priv <seed> --kid demo-sender --trace-id <trace_id> --json
 odin export-verify --gateway-url http://127.0.0.1:8080 --priv <seed> --kid demo-sender --trace-id <trace_id> --json
+```
+
+### macOS / Linux (bash) Quick Start
+```bash
+# venv & deps
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+
+# Gateway keypair
+python scripts/gen_keys.py
+export ODIN_GATEWAY_PRIVATE_KEY_B64="<printed>"
+export ODIN_GATEWAY_KID="<printed>"
+
+# Run gateway
+uvicorn services.gateway.main:app --host 127.0.0.1 --port 8080
+
+# Python SDK (editable install)
+pip install -e packages/odin_sdk
+
+# (Optional) export sender seed/kid if different from gateway key
+# export ODIN_SENDER_PRIV_B64="<sender_seed_b64u>"
+# export ODIN_SENDER_KID="sender-demo"
+
+# Prepare example payload (ensure ./examples/openai_invoice.json exists)
+# Send an envelope (uses env defaults if ODIN_SENDER_* exported)
+odin send \
+	--ptype openai.tooluse.invoice.v1 \
+	--ttype invoice.iso20022.v1 \
+	--payload-file ./examples/openai_invoice.json \
+	--print-body --json
 ```
 
 ### Command Shortcut (using env defaults)
@@ -430,9 +534,9 @@ node bin/odin.js send --gateway http://127.0.0.1:8080 `
 	--target-type canonical.event.v1
 ```
 
-HMAC / API key (optional): add `--api-key <key>` and `--hmac-secret <secret>`; client will compute `x-odin-mac` over `<cid>|<trace>|<ts>`.
+HMAC / API key (optional): add `--api-key <key>` and `--hmac-secret <secret>`; client will compute `X-ODIN-API-MAC` over `<cid>|<trace_id>|<ts>` and send with header `X-ODIN-API-Key`.
 
-Planned additions: chain fetch, export verification parity with Python CLI.
+Planned additions: chain fetch + export verification so the JS CLI reaches full parity with Python (`odinpy chain`, `odinpy export-verify`).
 
 ## Tests / CI
 ```powershell
@@ -476,10 +580,10 @@ Health endpoint: `/healthz` (alias `/health`). Metrics: `/metrics` (Prometheus e
 │  │  └─ main.py                # Gateway API implementation
 │  ├─ relay/
 │  │  ├─ __init__.py
-│  │  └─ main.py (future / placeholder)
+│  │  └─ main.py (optional / placeholder)
 │  └─ dashboard/
 │     ├─ __init__.py
-│     └─ main.py (future / placeholder UI)
+│     └─ main.py (FastAPI app – read‑only verify UI)
 ├─ packages/
 │  ├─ odin_core/                # Core primitives (crypto, cid, sft, hel, receipts)
 │  │  ├─ __init__.py
@@ -504,7 +608,7 @@ Health endpoint: `/healthz` (alias `/health`). Metrics: `/metrics` (Prometheus e
 Legend:
 * Core flow lives in `services/gateway/main.py` + `packages/odin_core/`.
 * The SDK depends only on the stable core primitives (no service internals).
-* Adding new schema transforms: implement in `sft.py` and register mapping.
+* Adding new schema transforms: implement in `sft.py` and register mapping (see `docs/sft/VERTICAL_MAPPINGS.md`).
 * Adding new policy rules: extend `PolicyEngine` in `hel.py`.
 
 ---
@@ -515,6 +619,91 @@ Legend:
 3. Recompute canonical JSON of `bundle`, sha256 → must equal `bundle_cid`.
 4. Verify Ed25519 signature over `<bundle_cid>|<trace_id>|<exported_at>` using JWKS active key.
 5. Inspect `chain_valid` and `receipts` link hashes.
+
+---
+
+## Transparency Log & Signed Checkpoints (Experimental)
+
+The gateway maintains an append‑only Merkle transparency log of export bundle CIDs (sha256 of the `bundle_cid` string). Each export appends the hash and returns an inclusion proof allowing offline verification of that bundle's membership in the log.
+
+Artifacts & Endpoints:
+* Export response → `transparency` object: `{ leaf_index, tree_size, root, audit_path, leaf_hash }`
+* Health → `/healthz` exposes current snapshot under `transparency`
+* Checkpoint → `/v1/transparency/checkpoint` returns signed structure:
+  ```jsonc
+  {
+	"root": "<hex or null>",
+	"size": <int>,
+	"ts": "<iso8601>",
+	"pattern": "<root>|<size>|<ts>",
+	"signature": "<b64u>",
+	"kid": "<gateway_kid>"
+  }
+  ```
+
+Signature semantics: Ed25519 over the ASCII string `<root>|<size>|<ts>` (empty root becomes leading `|`). Verify with the active gateway JWKS entry (`kid` matches).
+
+### Inclusion Proof Verification (Python example)
+```python
+import hashlib, json, requests
+
+def b64u_decode(data: str) -> bytes:
+	import base64
+	return base64.urlsafe_b64decode(data + '=' * (-len(data) % 4))
+
+def verify_inclusion(leaf_hash, index, path, expected_root):
+	h = leaf_hash
+	for entry in path:
+		sib = entry['sibling']; side = entry['side']
+		if side == 'right':
+			h = hashlib.sha256(bytes.fromhex(h)+bytes.fromhex(sib)).hexdigest()
+		else:
+			h = hashlib.sha256(bytes.fromhex(sib)+bytes.fromhex(h)).hexdigest()
+	return h == expected_root
+
+gw = 'http://127.0.0.1:8080'
+trace = '<trace_id>'
+
+# 1. Fetch export (already performed earlier); assume we have export_json
+export_json = requests.get(f"{gw}/v1/receipts/export/{trace}").json()
+tx = export_json['transparency']
+
+# 2. Recompute leaf hash (sha256 over bundle_cid literal) and compare
+bundle_cid = export_json['bundle_cid']
+leaf_hash_local = hashlib.sha256(bundle_cid.encode()).hexdigest()
+assert leaf_hash_local == tx['leaf_hash']
+
+# 3. Verify inclusion
+assert verify_inclusion(tx['leaf_hash'], tx['leaf_index'], tx['audit_path'], tx['root'])
+
+# 4. Fetch signed checkpoint & verify signature
+ckpt = requests.get(f"{gw}/v1/transparency/checkpoint").json()
+pattern = ckpt['pattern']
+assert pattern == f"{ckpt['root'] or ''}|{ckpt['size']}|{ckpt['ts']}"
+
+# 5. Verify signature with JWKS
+jwks = requests.get(f"{gw}/.well-known/jwks.json").json()['keys']
+pub = next(k for k in jwks if k['kid'] == ckpt['kid'])
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+def jwk_to_pub(j):
+	import base64
+	x = base64.urlsafe_b64decode(j['x'] + '=' * (-len(j['x']) % 4))
+	return Ed25519PublicKey.from_public_bytes(x)
+pub_key = jwk_to_pub(pub)
+sig = b64u_decode(ckpt['signature'])
+pub_key.verify(sig, pattern.encode())  # raises if invalid
+```
+
+Failure considerations:
+* If inclusion verification fails, either the export data was tampered or you're using a checkpoint/root from a different log state.
+* A checkpoint with root R and size N should never be followed by a later checkpoint with a different root for the same size (append‑only violation).
+
+Roadmap enhancements:
+* Consistency proofs between checkpoints
+* Periodic signed checkpoints persisted & optionally anchored externally (e.g., blockchain or public notary)
+* Retention windows & rollover segments (with hash linking across segments)
+
+---
 
 ---
 
@@ -566,6 +755,8 @@ $env:HOSTED_VERIFY_BASE_URL="https://verify.example.com"
 ```
 
 Placeholder public URL (replace after deploy): `https://YOUR-VERIFY-DOMAIN/`.
+
+Frontend embed note: if you plan to call the verify JSON endpoints directly from a browser SPA on another origin, ensure that origin is present in `CORS_ALLOW_ORIGINS` (comma separated). Without correct CORS headers, fetch() calls will fail preflight even though curl works.
 
 Routes:
 * `/verify/{trace_id}` – JSON API: fetches export bundle from the gateway, recomputes bundle CID, validates receipt chain, and verifies signature variants ( `<bundle_cid>|<trace_id>|<exported_at>` or CID‑only fallback ).
@@ -640,6 +831,123 @@ node bin/odin.js send --gateway http://127.0.0.1:8080 \
 	--target-type invoice.iso20022.v1
 ```
 
+### Concrete SFT Example (OpenAI tool-use → ISO20022)
+Input (`payload_type=openai.tooluse.invoice.v1`):
+```jsonc
+{
+	"created_at": "2025-01-20T10:15:22Z",
+	"tool_calls": [
+		{
+			"type": "function",
+			"function": {
+				"name": "create_invoice",
+				"arguments": "{\n  \"invoice_id\": \"INV-123\",\n  \"amount\": 100.25,\n  \"currency\": \"USD\",\n  \"customer_name\": \"Acme Corp\",\n  \"description\": \"SaaS subscription Jan\"\n}"
+			}
+		}
+	]
+}
+```
+Transformed (`target_type=invoice.iso20022.v1`):
+```jsonc
+{
+	"Document": {
+		"FIToFICstmrCdtTrf": {
+			"GrpHdr": {
+				"MsgId": "INV-123",
+				"CreDtTm": "2025-01-20T10:15:22Z"
+			},
+			"CdtTrfTxInf": [
+				{
+					"Amt": {"InstdAmt": {"ccy": "USD", "value": 100.25}},
+					"Cdtr": {"Nm": "Acme Corp"},
+					"RmtInf": {"Ustrd": ["SaaS subscription Jan"]}
+				}
+			]
+		}
+	}
+}
+```
+Notes (from `sft.py`): `fields_mapped = ["invoice_id->MsgId", "amount->InstdAmt", "customer_name->Cdtr.Nm"]`.
+
+Reverse (round‑trip) example (`invoice.iso20022.v1` → `openai.tooluse.invoice.v1`) yields a `tool_calls[0].function.arguments` JSON with the original business fields (see reverse mapper in `sft.py`).
+
+Additional ISO20022 output excerpt (different values):
+```jsonc
+{
+	"Document": {
+		"FIToFICstmrCdtTrf": {
+			"GrpHdr": { "MsgId": "INV-1001", "CreDtTm": "2025-08-22T00:00:00Z" },
+			"CdtTrfTxInf": [
+				{
+					"Amt": { "InstdAmt": { "ccy": "USD", "value": 321.5 } },
+					"Cdtr": { "Nm": "Acme" },
+					"RmtInf": { "Ustrd": ["Tool use"] }
+				}
+			]
+		}
+	}
+}
+```
+Mapping (for clarity): `invoice_id -> MsgId`, `created_at -> CreDtTm`, `amount/currency -> InstdAmt.value/ccy`, `customer_name -> Cdtr.Nm`, `description -> RmtInf.Ustrd[0]`.
+
+### Concrete HEL (Host Egress Limitation) Examples
+Environment configuration:
+```bash
+# Global allowlist (comma separated). '__SL__' would be decoded to '/' if used for CIDR.
+HEL_ALLOWLIST=api.bank.com,files.example.com
+
+# Tenant overrides (JSON). tenant-b gets an extra host not globally allowed.
+HEL_TENANT_ALLOWLISTS={"tenant-b":["private.internal.service"],"tenant-c":["analytics.example.net"]}
+```
+Python evaluation (uses `PolicyEngine` since no profile / rego path set):
+```python
+import os
+from odin_core.hel import PolicyEngine
+
+os.environ['HEL_ALLOWLIST'] = 'api.bank.com,files.example.com'
+os.environ['HEL_TENANT_ALLOWLISTS'] = '{"tenant-b":["private.internal.service"],"tenant-c":["analytics.example.net"]}'
+
+engine = PolicyEngine()
+print(engine.check_http_egress('api.bank.com').passed)              # True (global)
+print(engine.check_http_egress('private.internal.service').passed)  # False (no tenant context)
+print(engine.check_http_egress('private.internal.service', tenant_key='tenant-b').passed)  # True (tenant override)
+print(engine.check_http_egress('analytics.example.net', tenant_key='tenant-b').passed)     # False (not in tenant-b list)
+```
+Result reasoning examples:
+```jsonc
+{
+	"passed": true,
+	"rule": "HEL:HTTP_EGRESS_LIMITATION",
+	"reasons": ["tenant tenant-b allowlist applied", "host private.internal.service allowed"]
+}
+```
+Profiles shortcut (instead of explicit HEL vars): set `ODIN_POLICY_PROFILE=strict|medium|open`.
+* strict: only HEL_ALLOWLIST
+* medium: HEL_ALLOWLIST + built-in finance hosts (`api.bank.com`, `payments.bank.com`)
+* open: everything allowed
+
+Rego policy (optional advanced): set `ODIN_POLICY_REGO_PATH=/path/policy.rego` (takes precedence over HEL unless a profile is set). Failures default to deny with `rego_error` reason.
+
+Sample Rego policy (`policies/egress_allowlist.rego`):
+```rego
+package odin.policy
+
+default allow = false
+
+# Global host allowlist
+allow { input.host == "api.openai.com" }
+
+# Per-tenant override (control plane issued tenant id)
+allow { input.tenant == "tenant-123" input.host == "postman-echo.com" }
+
+reasons := [sprintf("allow host %s", [input.host])] { allow }
+```
+Run evaluation manually:
+```bash
+opa eval -I -f pretty -d policies/egress_allowlist.rego 'data.odin.policy' <<< '{"input":{"host":"api.openai.com","tenant":"tenant-999"}}'
+```
+
+
 ---
 
 ## Security Notes
@@ -651,7 +959,9 @@ node bin/odin.js send --gateway http://127.0.0.1:8080 \
 * Signed Contexts: Envelopes sign `<cid>|<trace_id>|<ts>`; export bundles sign `<bundle_cid>|<trace_id>|<exported_at>` binding content + lineage + freshness.
 * Tamper Evidence: Receipts are hash‑linked (`prev_receipt_hash`); altering history breaks the chain.
 * Defense in Depth: Optional API key + HMAC (`X-ODIN-API-Key` / `X-ODIN-API-MAC`) mitigates spoofing and simple replay.
-* Replay Hardening (future): Enforce max age / skew on `ts` and optional nonce cache.
+* Header Case: HTTP header names are case‑insensitive; docs and examples use canonical casing (`X-ODIN-Response-CID`, `X-ODIN-Receipt-Hash`, `X-ODIN-Signature`, `X-ODIN-KID`) for readability—clients/libraries may normalize to lowercase internally.
+* Replay Hardening: Enforces max age / skew on `ts` (`ODIN_MAX_SKEW_SECONDS`) plus in‑memory replay cache (`ODIN_REPLAY_CACHE_SIZE`). Increase cache size if very high QPS.
+* Retention: Local receipt log pruning controlled via `ODIN_RETENTION_MAX_LOCAL_LINES` / `ODIN_RETENTION_MAX_AGE_SECONDS`; pruning preserves chain integrity (hashes link only forward). For compliance exports, schedule periodic bundles before aggressive pruning.
 * Separation: Relay isolates egress allowing stricter network controls.
 
 ## Versioning & Stability
@@ -662,15 +972,46 @@ Extensible (additive only): policy metadata, normalization annotations, export b
 Breaking changes introduce a new versioned target type (e.g. `invoice.iso20022.v2`) or additive receipt field rather than mutating existing ones.
 
 ## Roadmap
+**Phase 1 (Core)**: ✅ receipts, export bundles, policy profiles, SFT, basic control plane, replay protection, retention
+
+**Phase 2 (Trust & Safety)**: ✅ transparency log + signed checkpoints, dual‑sign BYOK groundwork, structured audit log, vertical SFTs, custody metadata
+
+**Phase 3 (Distribution & Ecosystem)** (in progress):
+* One‑click deploys:
+	* Helm chart (see `deploy/helm/odin-gateway`) – `helm install odin ./deploy/helm/odin-gateway`
+	* Terraform modules: GCP (Cloud Run) & AWS (ECR+ECS Fargate) under `deploy/terraform/`
+	* Deploy to Cloud Run button: [![Deploy to Cloud Run](https://deploy.cloud.run/button.svg)](https://deploy.cloud.run?git_repo=https://github.com/Maverick0351a/odin-gateway-starter)
+* Spec site (mkdocs-material) draft: `spec/` → build locally with `pip install mkdocs-material && mkdocs serve -f spec/mkdocs.yml`
+* Conformance harness: auto‑run receipt/export/verifier test vectors → issues **ODIN Verified** badge (see `conformance/` + `conformance.yml` workflow)
+* Reference integrations: OpenAI, Anthropic, Vertex AI tool outputs → ISO 20022 / FHIR / ACORD mappings (examples in SFT + README Recipes)
+* Design Partner Program: fintech ops, health, insurance (see `docs/partners/DESIGN_PARTNER_PROGRAM.md`)
+
+Upcoming / Backlog:
 * Relay retry/backoff & dead‑letter
 * JS CLI parity: chain + export verify
 * Lint & type checks (ruff / mypy) in CI
 * Coverage + badge
 * Manual `workflow_dispatch` trigger
-* Publish to PyPI / npm
-* Pluggable policy modules
-* Merkle aggregation for batch proofs
-* Additional signer backends (GCP KMS, AWS KMS, Azure Key Vault) using the new abstraction
+* Publish to PyPI / npm (stable tags) & publish spec (ope.odinprotocol.dev)
+* Pluggable policy modules & policy bundle registry
+* Merkle aggregation (batch proofs) & consistency proofs between checkpoints
+* Additional signer backends (GCP KMS, AWS KMS, Azure Key Vault) – production hardening
+* External anchoring of transparency checkpoints (timestamping)
+* SIEM export / streaming audit sink
+* SAST & dependency scanning in CI (bandit, pip-audit)
+* Policy bundles & versioned registry
+* Conformance badge publishing (dynamic README shield)
+
+### ODIN Verified (Conformance)
+Automated workflow `conformance.yml` runs:
+1. Ruff lint
+2. Pytests (unit/integration)
+3. Conformance vectors (offline transforms)
+4. Spec site build (artifact)
+5. Helm template & Terraform validate
+
+Passing all steps qualifies commit for **ODIN Verified** status. (Badge automation TODO)
+
 
 ## Contributing
 PRs & issues welcome. Run tests (`python -m pytest -q`) before submitting. Please keep receipts & cryptographic semantics backwards‑compatible; if you need to break them, add a new versioned target type or receipt field while preserving old behavior.
