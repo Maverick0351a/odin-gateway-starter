@@ -26,7 +26,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install mkdocs-material ruff mypy
+          pip install mkdocs-material
           pip install -e packages/odin_sdk
       - name: Cache mypy & ruff
         uses: actions/cache@v4
@@ -37,12 +37,8 @@ jobs:
           key: mypy-ruff-${{ runner.os }}-3.11-${{ hashFiles('mypy.ini','requirements.txt') }}
           restore-keys: |
             mypy-ruff-${{ runner.os }}-3.11-
-      - name: Lint (ruff)
-        run: ruff check .
-      - name: Type check (mypy)
-        run: mypy --config-file mypy.ini packages/odin_core packages/odin_sdk --show-error-codes
-      - name: Pytests
-        run: pytest -q -W error::DeprecationWarning -W ignore::UserWarning
+  # CI workflow already runs tests, lint, mypy across versions.
+  # Conformance workflow focuses on spec & infra validation to reduce duplication/time.
       - name: Conformance harness
         run: python -m conformance.harness --mode offline
       - name: Build spec site

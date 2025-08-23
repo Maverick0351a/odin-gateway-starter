@@ -23,7 +23,7 @@ from fastapi.testclient import TestClient
 from services.dashboard.main import app as dashboard_app
 from services.gateway.main import app as gateway_app
 
-GATEWAY_PORT = 8099
+GATEWAY_PORT = int(os.getenv("TEST_GATEWAY_PORT", "8099"))
 GATEWAY_URL = f"http://127.0.0.1:{GATEWAY_PORT}"
 
 # Helper b64url
@@ -37,22 +37,31 @@ def _run_gateway():
     server.run()
 
 def ensure_gateway():
+    """Start the gateway in a background thread and wait until health endpoint responds.
+
+    Hardened for CI:
+    - Port can be overridden via TEST_GATEWAY_PORT
+    - Retry up to ~12s with incremental backoff
+    - Capture last exception for debugging
+    """
     global _server_started
     if _server_started:
         return
     t = threading.Thread(target=_run_gateway, daemon=True)
     t.start()
-    # Wait for health
-    for _ in range(50):
+    last_err = None
+    # 120 attempts, backoff grows slightly (0.1 -> ~0.7s max per iteration)
+    for attempt in range(120):
         try:
-            r = httpx.get(f"{GATEWAY_URL}/healthz", timeout=0.3)
+            r = httpx.get(f"{GATEWAY_URL}/healthz", timeout=0.4)
             if r.status_code == 200:
                 _server_started = True
                 return
-        except Exception:
-            pass
-        time.sleep(0.1)
-    raise RuntimeError("Gateway failed to start for verify test")
+        except Exception as e:  # keep last error
+            last_err = e
+        # incremental backoff but keep total time reasonable
+        time.sleep(0.05 + min(0.65, attempt * 0.005))
+    raise RuntimeError(f"Gateway failed to start for verify test after 120 attempts (last_err={last_err})")
 
 def post_envelope(trace_id: str):
     priv = Ed25519PrivateKey.generate()

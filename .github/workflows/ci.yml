@@ -32,7 +32,6 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install -e packages/odin_sdk
-          pip install mypy ruff
       - name: Cache mypy & ruff
         uses: actions/cache@v4
         with:
@@ -45,6 +44,6 @@ jobs:
       - name: Run tests
         run: pytest -q -W error::DeprecationWarning -W ignore::UserWarning
       - name: Lint (ruff)
-        run: ruff check .
+        run: ruff check . --output-format=github
       - name: Type check (mypy)
         run: mypy --config-file mypy.ini packages/odin_core packages/odin_sdk --show-error-codes
