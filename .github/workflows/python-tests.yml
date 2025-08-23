@@ -19,5 +19,6 @@ jobs:
     steps:
       - name: Compatibility pass-through
         run: |
-          echo "Legacy python-tests placeholder for required status 'tests (${ { matrix.python-version } })'" | sed 's/ //g' > /dev/null || true
+          echo "Legacy python-tests placeholder for required status check."
+          echo "Python version: ${{ matrix.python-version }}"
           echo "Update branch protection to remove this check; then delete python-tests.yml."
