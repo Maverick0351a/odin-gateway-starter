@@ -54,7 +54,3 @@ resource "google_project_iam_member" "run_invoker" {
     expression  = "true"
   }
 }
-
-output "gateway_url" {
-  value = google_cloud_run_service.gateway.status[0].url
-}
