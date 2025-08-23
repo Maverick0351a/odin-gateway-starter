@@ -4,10 +4,20 @@ Provides enough functionality for the gateway & tests without external storage.
 Replace with a persistent implementation when ready.
 """
 from __future__ import annotations
-from typing import Dict, Any, Optional, List
-import secrets, time, threading, datetime
 
-ISO = lambda: datetime.datetime.utcnow().replace(tzinfo=datetime.timezone.utc).isoformat()
+import datetime
+import secrets
+import threading
+import time
+from typing import Any, Dict, List, Optional
+
+
+def ISO() -> str:  # noqa: N802 (keep uppercase helper name for brevity)
+    """Return current UTC timestamp in ISO 8601 format with timezone.
+
+    Small helper kept uppercase to align with previous usage; exempt from naming lint.
+    """
+    return datetime.datetime.utcnow().replace(tzinfo=datetime.timezone.utc).isoformat()
 
 class ControlPlane:
     def __init__(self, path: Optional[str] = None):  # path ignored in stub

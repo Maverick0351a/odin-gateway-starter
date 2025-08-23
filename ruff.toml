@@ -1,7 +1,16 @@
 line-length = 120
 target-version = "py311"
+
+[lint]
 extend-select = ["I", "C90"]
-ignore = ["E501"]
+ignore = ["E501"]  # allow long lines (doc / JSON samples)
 
 [lint.per-file-ignores]
-"tests/*" = ["S101"]
+"tests/*" = [
+	"S101",  # assert usage in tests
+	"E401","E402","E702","E701","E731","E741","F401","F841"  # relax stylistic noise in tests for now
+]
+"scripts/*" = ["E702","E701","E731","C901"]
+"tools/repl/*" = ["C901","E702"]
+"services/dashboard/*" = ["C901","E702"]
+"services/gateway/*" = ["C901"]  # keep complexity warning suppressed temporarily

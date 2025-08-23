@@ -1,9 +1,14 @@
-from typing import Dict, Any, Optional, List
 import hashlib
-from .utils import canonical_json, now_ts_iso
+from typing import Any, Dict, List, Optional
+
 from .signer import Signer
+from .utils import canonical_json, now_ts_iso
+
+
 def _strip_sig_for_hash(r: Dict[str,Any]) -> Dict[str,Any]:
-    d = dict(r); d.pop("receipt_signature", None); return d
+    d = dict(r)
+    d.pop("receipt_signature", None)
+    return d
 def hash_receipt(receipt: Dict[str, Any]) -> str:
     return hashlib.sha256(canonical_json(_strip_sig_for_hash(receipt))).hexdigest()
 def build_receipt(*, signer: Signer, trace_id: str, hop_index: int, request_cid: str, normalized_cid: str, policy_result: Dict[str, Any], gateway_kid: str, prev_receipt_hash: Optional[str], policy_engine: Optional[str] = None, tenant_id: Optional[str] = None, tenant_signatures: Optional[List[Dict[str, str]]] = None):

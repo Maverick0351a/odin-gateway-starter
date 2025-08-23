@@ -1,19 +1,24 @@
-import os, json, logging, hashlib
-from typing import Optional, Dict, Any, List
+import hashlib
+import hmac
+import json
+import logging
+import os
+import pathlib
+import sys
+import time
+from collections import OrderedDict
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
+
+import httpx
+from cryptography.hazmat.primitives import serialization
 from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from fastapi.encoders import jsonable_encoder
+from prometheus_client import CONTENT_TYPE_LATEST, CollectorRegistry, Counter, Histogram, generate_latest
 from pydantic import BaseModel, Field
-import httpx
-from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST, CollectorRegistry
-import time
-from datetime import datetime, timezone
-from collections import OrderedDict
-from cryptography.hazmat.primitives import serialization
-import hmac, hashlib
 
-import sys, pathlib
 # Robustly add any ancestor ./packages directory to sys.path for CI/import resilience
 for anc in pathlib.Path(__file__).resolve().parents:
     cand = anc / 'packages'
@@ -23,14 +28,23 @@ for anc in pathlib.Path(__file__).resolve().parents:
             sys.path.insert(0, p)
         break
 
-from odin_core import (
+from odin_core import (  # noqa: E402
+    PolicyManager,
+    ReceiptStore,
+    SFTError,
+    b64u_encode,
+    build_receipt,
+    canonical_json,
+    cid_sha256,
+    gen_trace_id,
+    now_ts_iso,
+    transform_payload,
     verify_with_jwk,
-    cid_sha256, now_ts_iso, gen_trace_id, transform_payload, SFTError,
-    PolicyManager, build_receipt, ReceiptStore, b64u_encode, canonical_json
 )
-from odin_core.transparency import TransparencyLog
-from odin_core.signer import load_signer
-from odin_core.audit import audit
+from odin_core.audit import audit  # noqa: E402
+from odin_core.signer import load_signer  # noqa: E402
+from odin_core.transparency import TransparencyLog  # noqa: E402
+
 try:
     from odin_core.control import ControlPlane  # direct module import
 except Exception as _cp_err:  # noqa
@@ -56,7 +70,7 @@ except Exception as _cp_err:  # noqa
             raise ImportError(f"Unable to load ControlPlane (spec failure): {_cp_err}")
     else:
         raise ImportError(f"ControlPlane module not found at {ctrl_file}: {_cp_err}")
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey  # noqa: E402
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("odin.gateway")
@@ -356,17 +370,15 @@ async def accept_envelope(ope: OPE, request: Request):
     forwarded = None
     api_key = request.headers.get("x-odin-api-key") or request.headers.get("x-api-key")
     tenant_ctx = None
+    # Decide if auth is required: explicit legacy env keys OR flag when tenants configured
+    require_flag = os.getenv("ODIN_REQUIRE_API_KEY", "0").lower() in ("1", "true", "yes")
+    auth_required = bool(API_KEY_SECRETS) or (require_flag and control_plane.data.get("tenants"))
     if api_key:
-        # Prefer control plane resolution when available
         tenant_ctx = control_plane.resolve_api_key(api_key)
-        # If auth not required and api_key looks like a tenant id present in control plane, synthesize context (no secret)
+        # If auth not required (open mode) and api_key matches a tenant id, allow pseudo-context
         if not tenant_ctx and api_key in control_plane.data.get("tenants", {}) and not auth_required:
             t = control_plane.data["tenants"][api_key]
             tenant_ctx = {"tenant_id": api_key, "secret": None, "rate_limit_rpm": t.get("rate_limit_rpm",0), "allowlist": t.get("allowlist", [])}
-    # Decide if auth is required: explicit legacy env keys OR flag OR control plane keys + flag
-    # Evaluate requirement dynamically so tests can toggle via environment between runs
-    require_flag = os.getenv("ODIN_REQUIRE_API_KEY", "0").lower() in ("1", "true", "yes")
-    auth_required = bool(API_KEY_SECRETS) or (require_flag and control_plane.data.get("tenants"))
     if auth_required:
         if not api_key:
             REQS.labels(status="unauthorized").inc()
