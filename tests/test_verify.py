@@ -1,5 +1,7 @@
-import json, time, hashlib, base64, threading, os, sys
+import json, time, hashlib, base64, threading, os, sys, pathlib
 os.environ.pop('ODIN_REQUIRE_API_KEY', None)
+pkg_dir = pathlib.Path(__file__).resolve().parents[1] / 'packages'
+sys.path.insert(0, str(pkg_dir))
 if 'services.gateway.main' in sys.modules:
     del sys.modules['services.gateway.main']
 from datetime import datetime, timezone
