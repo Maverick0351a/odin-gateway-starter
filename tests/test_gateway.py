@@ -1,3 +1,7 @@
+import os, sys
+os.environ.pop('ODIN_REQUIRE_API_KEY', None)
+if 'services.gateway.main' in sys.modules:
+    del sys.modules['services.gateway.main']
 from fastapi.testclient import TestClient
 from services.gateway.main import app
 import json, hashlib

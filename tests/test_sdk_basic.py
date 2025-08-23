@@ -3,6 +3,10 @@ from datetime import datetime, timezone
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives import serialization
 from fastapi.testclient import TestClient
+import os, sys
+os.environ.pop('ODIN_REQUIRE_API_KEY', None)
+if 'services.gateway.main' in sys.modules:
+    del sys.modules['services.gateway.main']
 
 # Ensure packages path
 import pathlib

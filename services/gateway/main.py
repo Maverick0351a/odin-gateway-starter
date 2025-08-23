@@ -1,6 +1,7 @@
 import os, json, logging
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel, Field
@@ -18,6 +19,8 @@ from odin_core import (
     cid_sha256, now_ts_iso, gen_trace_id, transform_payload, SFTError,
     PolicyEngine, build_receipt, ReceiptStore, b64u_encode, canonical_json
 )
+from odin_core.control import ControlPlane
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("odin.gateway")
@@ -51,6 +54,11 @@ def _load_additional_jwks():
 
 policy_engine = PolicyEngine()
 store = ReceiptStore()
+control_plane = ControlPlane()
+rate_limiter = control_plane.rate_limiter()
+
+ADMIN_TOKEN = os.getenv("ODIN_ADMIN_TOKEN")
+REQUIRE_API_KEY = os.getenv("ODIN_REQUIRE_API_KEY", "0").lower() in ("1", "true", "yes")
 
 # Optional API key + HMAC auth
 def _load_api_key_secrets():
@@ -86,14 +94,28 @@ class OPE(BaseModel):
     signature: str
     forward_url: Optional[str] = None
 
-app = FastAPI(title="ODIN Gateway", version="0.3.0")
+app = FastAPI(title="ODIN Gateway", version="0.3.1")
+
+# Optional CORS (comma-separated origins)
+_cors_origins = os.getenv("CORS_ALLOW_ORIGINS")
+if _cors_origins:
+    origins = [o.strip() for o in _cors_origins.split(',') if o.strip()]
+    if origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=origins,
+            allow_credentials=False,
+            allow_methods=["GET","POST","OPTIONS"],
+            allow_headers=["*"]
+        )
 
 @app.get("/.well-known/jwks.json")
 def jwks():
-    keys = []
+    keys: List[Dict[str, Any]] = []
     active = dict(GATEWAY_JWK)
     active.setdefault("status", "active")
     keys.append(active)
+    # Legacy / additional from env
     addl = _load_additional_jwks()
     if addl:
         for k in addl.get("keys", []):
@@ -101,6 +123,23 @@ def jwks():
                 k2 = dict(k)
                 k2.setdefault("status", "legacy")
                 keys.append(k2)
+    # Control plane signer rotation legacy seeds (derive public key, never expose seed)
+    signer = control_plane.data.get("signer", {})
+    for legacy in signer.get("legacy", []):
+        kid = legacy.get("kid")
+        seed_b64 = legacy.get("seed_b64")
+        if not kid or not seed_b64:
+            continue
+        try:
+            import base64
+            seed = base64.urlsafe_b64decode(seed_b64 + "=" * (-len(seed_b64) % 4))
+            if len(seed) != 32:
+                continue
+            pk = Ed25519PrivateKey.from_private_bytes(seed).public_key()
+            pub_raw = pk.public_bytes(encoding=serialization.Encoding.Raw, format=serialization.PublicFormat.Raw)
+            keys.append({"kty": "OKP", "crv": "Ed25519", "x": b64u_encode(pub_raw), "kid": kid, "status": "legacy"})
+        except Exception:
+            continue
     return {"keys": keys}
 
 @app.get("/healthz")
@@ -210,27 +249,53 @@ async def accept_envelope(ope: OPE, request: Request):
     policy_result = {"passed": True, "rules": []}
     forwarded = None
     api_key = request.headers.get("x-odin-api-key") or request.headers.get("x-api-key")
-    # Enforce API key + HMAC when configured
-    if API_KEY_SECRETS:
-        if not api_key or api_key not in API_KEY_SECRETS:
+    tenant_ctx = None
+    if api_key:
+        # Prefer control plane resolution when available
+        tenant_ctx = control_plane.resolve_api_key(api_key)
+        # If auth not required and api_key looks like a tenant id present in control plane, synthesize context (no secret)
+        if not tenant_ctx and api_key in control_plane.data.get("tenants", {}) and not auth_required:
+            t = control_plane.data["tenants"][api_key]
+            tenant_ctx = {"tenant_id": api_key, "secret": None, "rate_limit_rpm": t.get("rate_limit_rpm",0), "allowlist": t.get("allowlist", [])}
+    # Decide if auth is required: explicit legacy env keys OR flag OR control plane keys + flag
+    # Evaluate requirement dynamically so tests can toggle via environment between runs
+    require_flag = os.getenv("ODIN_REQUIRE_API_KEY", "0").lower() in ("1", "true", "yes")
+    auth_required = bool(API_KEY_SECRETS) or (require_flag and control_plane.data.get("tenants"))
+    if auth_required:
+        if not api_key:
             REQS.labels(status="unauthorized").inc()
-            raise HTTPException(401, detail="Missing or unknown API key")
+            raise HTTPException(401, detail="Missing API key")
+        secret = None
+        if tenant_ctx:
+            secret = tenant_ctx.get("secret")
+        elif api_key in API_KEY_SECRETS:
+            secret = API_KEY_SECRETS[api_key]
+        if not secret:
+            REQS.labels(status="unauthorized").inc()
+            raise HTTPException(401, detail="Unknown API key")
         mac_header = request.headers.get("x-odin-api-mac")
         if not mac_header:
             REQS.labels(status="unauthorized").inc()
             raise HTTPException(401, detail="Missing X-ODIN-API-MAC header")
-        # Compute expected HMAC over the same message used by the sender signature
-        expected = hmac.new(API_KEY_SECRETS[api_key].encode(), message, hashlib.sha256).digest()
-        exp_b64u = b64u_encode(expected)
-        if not hmac.compare_digest(exp_b64u, mac_header):
+        expected = hmac.new(secret.encode(), message, hashlib.sha256).digest()
+        if not hmac.compare_digest(b64u_encode(expected), mac_header):
             REQS.labels(status="unauthorized").inc()
             raise HTTPException(401, detail="Bad API key MAC")
+        # Rate limiting (per tenant when available; else per key)
+        if tenant_ctx:
+            rpm = tenant_ctx.get("rate_limit_rpm", 0) or 0
+            if rpm > 0 and not rate_limiter.check(tenant_ctx["tenant_id"], rpm):
+                REQS.labels(status="rate_limited").inc()
+                raise HTTPException(429, detail="Rate limit exceeded")
     if ope.forward_url:
         try:
             host = httpx.URL(ope.forward_url).host
         except Exception:
             raise HTTPException(400, detail="Invalid forward_url")
-        hel = policy_engine.check_http_egress(host, tenant_key=api_key)
+        hel = policy_engine.check_http_egress(host)
+        # Augment with tenant allowlist if policy failed and tenant context exists
+        if not hel.passed and tenant_ctx and host in (tenant_ctx.get("allowlist") or []):
+            hel = type(hel)(passed=True, rule=hel.rule, reasons=hel.reasons + [f"tenant allowlist host {host} allowed"])
         policy_result = {"passed": hel.passed, "rules": [{"rule": hel.rule, "reasons": hel.reasons}]}
         if not hel.passed:
             REQS.labels(status="policy_block").inc()
@@ -293,3 +358,74 @@ async def accept_envelope(ope: OPE, request: Request):
         pass
     encoded = jsonable_encoder(resp_body)
     return JSONResponse(encoded, headers=headers)
+
+# ---------------- Admin API -----------------
+
+def _admin_auth(request: Request):
+    if not ADMIN_TOKEN:
+        raise HTTPException(403, detail="Admin API disabled (no ODIN_ADMIN_TOKEN set)")
+    token = request.headers.get("x-admin-token")
+    if token != ADMIN_TOKEN:
+        raise HTTPException(401, detail="Invalid admin token")
+
+@app.get("/v1/admin/tenants")
+def admin_list_tenants(request: Request):
+    _admin_auth(request)
+    return {"tenants": control_plane.list_tenants()}
+
+@app.post("/v1/admin/tenants")
+async def admin_create_tenant(request: Request):
+    _admin_auth(request)
+    body = await request.json()
+    tenant_id = body.get("tenant_id")
+    name = body.get("name")
+    if not tenant_id:
+        raise HTTPException(400, detail="tenant_id required")
+    try:
+        t = control_plane.create_tenant(tenant_id, name=name)
+        return t
+    except ValueError as e:
+        raise HTTPException(400, detail=str(e))
+
+@app.get("/v1/admin/tenants/{tenant_id}")
+def admin_get_tenant(tenant_id: str, request: Request):
+    _admin_auth(request)
+    t = control_plane.get_tenant(tenant_id)
+    if not t:
+        raise HTTPException(404, detail="not found")
+    return t
+
+@app.patch("/v1/admin/tenants/{tenant_id}")
+async def admin_update_tenant(tenant_id: str, request: Request):
+    _admin_auth(request)
+    body = await request.json()
+    try:
+        t = control_plane.update_tenant(tenant_id, **body)
+        return t
+    except ValueError as e:
+        raise HTTPException(404, detail=str(e))
+
+@app.delete("/v1/admin/tenants/{tenant_id}")
+def admin_delete_tenant(tenant_id: str, request: Request):
+    _admin_auth(request)
+    ok = control_plane.delete_tenant(tenant_id)
+    if not ok:
+        raise HTTPException(404, detail="not found")
+    return {"deleted": True}
+
+@app.post("/v1/admin/tenants/{tenant_id}/keys")
+def admin_issue_key(tenant_id: str, request: Request):
+    _admin_auth(request)
+    try:
+        rec = control_plane.issue_key(tenant_id)
+        return rec
+    except ValueError:
+        raise HTTPException(404, detail="tenant not found")
+
+@app.post("/v1/admin/tenants/{tenant_id}/keys/{key}/revoke")
+def admin_revoke_key(tenant_id: str, key: str, request: Request):
+    _admin_auth(request)
+    ok = control_plane.revoke_key(tenant_id, key)
+    if not ok:
+        raise HTTPException(404, detail="not found")
+    return {"revoked": True}
