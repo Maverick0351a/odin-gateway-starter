@@ -5,10 +5,9 @@ from odin_core.hel import HELResult, PolicyManager
 
 
 def test_policy_manager_default_hel_allows_configured_host(monkeypatch):
+    monkeypatch.delenv('ODIN_POLICY_PROFILE', raising=False)  # ensure not forced open
     monkeypatch.setenv("HEL_ALLOWLIST", "example.com")
     pm = PolicyManager()
-    # Ensure manager exposes an active engine attribute for provenance
-    assert hasattr(pm, 'active_engine') or True  # permissive to not break older managers
     res = pm.check_http_egress("example.com")
     assert res.passed
     res2 = pm.check_http_egress("blocked.com")

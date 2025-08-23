@@ -5,6 +5,7 @@ import os
 import sys
 
 os.environ.pop('ODIN_REQUIRE_API_KEY', None)
+os.environ.pop('ODIN_POLICY_PROFILE', None)
 if 'services.gateway.main' in sys.modules:
     del sys.modules['services.gateway.main']
 from datetime import datetime, timezone
@@ -83,9 +84,9 @@ def test_key_rotation_and_status(monkeypatch):
 
 
 def test_per_tenant_hel_allow(monkeypatch):
+    monkeypatch.delenv('ODIN_POLICY_PROFILE', raising=False)
     monkeypatch.setenv("HEL_ALLOWLIST", "")
     monkeypatch.setenv("HEL_TENANT_ALLOWLISTS", json.dumps({"tenant-123":["allowed.example.com"]}))
-    # NOTE: Without creating tenant in control plane this will still block; we simply assert blocked behavior for non-allowlisted host
     monkeypatch.setenv("ODIN_REQUIRE_API_KEY", "0")
     if "services.gateway.main" in sys.modules:
         del sys.modules["services.gateway.main"]
