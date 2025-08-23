@@ -28,12 +28,13 @@ resource "google_cloud_run_service" "gateway" {
     spec {
       containers {
         image = var.image
-        env = [
-          for k, v in var.env : {
-            name  = k
-            value = v
+        dynamic "env" {
+          for_each = var.env
+          content {
+            name  = env.key
+            value = env.value
           }
-        ]
+        }
       }
     }
   }
