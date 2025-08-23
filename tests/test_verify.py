@@ -6,23 +6,21 @@ import pathlib
 import sys
 import threading  # retained for backward compatibility (no longer used for server)
 import time
-
-os.environ.pop('ODIN_REQUIRE_API_KEY', None)
-pkg_dir = pathlib.Path(__file__).resolve().parents[1] / 'packages'
-sys.path.insert(0, str(pkg_dir))
-if 'services.gateway.main' in sys.modules:
-    del sys.modules['services.gateway.main']
 from datetime import datetime, timezone
 
 import httpx
-# uvicorn no longer required for this test; in-process TestClient is used to avoid flakiness
-# import uvicorn
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fastapi.testclient import TestClient
 
 from services.dashboard.main import app as dashboard_app
 from services.gateway.main import app as gateway_app
+
+os.environ.pop('ODIN_REQUIRE_API_KEY', None)
+pkg_dir = pathlib.Path(__file__).resolve().parents[1] / 'packages'
+sys.path.insert(0, str(pkg_dir))
+if 'services.gateway.main' in sys.modules:
+    del sys.modules['services.gateway.main']
 
 GATEWAY_PORT = int(os.getenv("TEST_GATEWAY_PORT", "8099"))  # retained for potential future external run
 GATEWAY_URL = None  # will be set after TestClient initialization (asgi://gateway indicator)
