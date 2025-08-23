@@ -118,62 +118,71 @@ def cmd_chain(args):
     else:
         print(json.dumps(chain, indent=2))
 
-def _verify_export_bundle(bundle_resp: dict, jwks_resp: dict):  # noqa: C901
-    # Minimal verification echoing scripts/verify_export.py core logic
+def _verify_export_bundle(bundle_resp: dict, jwks_resp: dict):
+    """Verify exported bundle integrity (hash linkage, CID, signature)."""
     headers = bundle_resp.get("_headers", {})
     body = bundle_resp["body"]
     chain = body.get("chain") or body.get("hops") or body.get("bundle", {}).get("receipts")
     if not chain:
         raise SystemExit("No chain/hops in export bundle")
-    # Hash linkage
+    _verify_chain_hashes(chain)
+    resp_cid_hdr = headers.get("x-odin-response-cid") or headers.get("x-odin-bundle-cid")
+    if resp_cid_hdr:
+        _verify_bundle_cid(body, resp_cid_hdr)
+    _verify_signature(headers, body, chain, jwks_resp, resp_cid_hdr)
+    return True
+
+def _verify_chain_hashes(chain):
+    import hashlib
     for i, r in enumerate(chain):
         r_copy = dict(r)
         r_copy.pop("receipt_signature", None)
-        import hashlib
         local_hash = hashlib.sha256(canonical_json(r_copy)).hexdigest()
         if local_hash != r.get("receipt_hash"):
             raise SystemExit(f"Receipt hash mismatch at index {i}")
         if i > 0 and r.get("prev_receipt_hash") != chain[i-1].get("receipt_hash"):
             raise SystemExit(f"Chain broken at index {i}")
-    # Response CID
-    resp_cid_hdr = headers.get("x-odin-response-cid") or headers.get("x-odin-bundle-cid")
-    if resp_cid_hdr:
-        local_cid = cid_sha256(canonical_json(body))
-        if local_cid != resp_cid_hdr:
-            raise SystemExit("Bundle CID mismatch")
-    # Signature verification (best effort)
+
+def _verify_bundle_cid(body, cid_header: str):
+    local_cid = cid_sha256(canonical_json(body))
+    if local_cid != cid_header:
+        raise SystemExit("Bundle CID mismatch")
+
+def _verify_signature(headers, body, chain, jwks_resp, resp_cid_hdr: Optional[str]):
     sig = headers.get("x-odin-signature") or headers.get("x-odin-bundle-signature")
     kid = headers.get("x-odin-kid")
-    if sig and kid:
-        keys = jwks_resp.get("keys", [])
-        key = next((k for k in keys if k.get("kid") == kid), None)
-        if key:
-            from cryptography.exceptions import InvalidSignature  # noqa: I001
-            from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey  # noqa: I001
-            import base64  # noqa: I001
+    if not (sig and kid):
+        return
+    keys = jwks_resp.get("keys", [])
+    key = next((k for k in keys if k.get("kid") == kid), None)
+    if not key:
+        return
+    from cryptography.exceptions import InvalidSignature
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+    import base64
 
-            def b64u_dec(s: str):  # local helper
-                return base64.urlsafe_b64decode(s + ("=" * (-len(s) % 4)))
-            pk = Ed25519PublicKey.from_public_bytes(b64u_dec(key["x"]))
-            # Try message formats
-            trace = body.get("trace_id") or headers.get("x-odin-trace-id")
-            ts = body.get("ts") or (chain[-1].get("ts") if chain else None)
-            candidates = []
-            if resp_cid_hdr and trace and ts:
-                candidates.append(f"{resp_cid_hdr}|{trace}|{ts}".encode())
-            if resp_cid_hdr:
-                candidates.append(resp_cid_hdr.encode())
-            verified = False
-            for m in candidates:
-                try:
-                    pk.verify(b64u_dec(sig), m)
-                    verified = True
-                    break
-                except InvalidSignature:
-                    continue
-            if not verified:
-                raise SystemExit("Signature verification failed")
-    return True
+    def b64u_dec(s: str):
+        return base64.urlsafe_b64decode(s + ("=" * (-len(s) % 4)))
+
+    pk = Ed25519PublicKey.from_public_bytes(b64u_dec(key["x"]))
+    trace = body.get("trace_id") or headers.get("x-odin-trace-id")
+    ts = body.get("ts") or (chain[-1].get("ts") if chain else None)
+    candidates = []
+    if resp_cid_hdr and trace and ts:
+        candidates.append(f"{resp_cid_hdr}|{trace}|{ts}".encode())
+    if resp_cid_hdr:
+        candidates.append(resp_cid_hdr.encode())
+    verified = any(_try_verify(pk, b64u_dec(sig), m) for m in candidates)
+    if not verified:
+        raise SystemExit("Signature verification failed")
+
+def _try_verify(pk, sig_bytes: bytes, message: bytes) -> bool:
+    from cryptography.exceptions import InvalidSignature
+    try:
+        pk.verify(sig_bytes, message)
+        return True
+    except InvalidSignature:
+        return False
 
 def cmd_export_verify(args):
     import httpx
