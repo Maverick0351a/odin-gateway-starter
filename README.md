@@ -546,6 +546,9 @@ python -m pytest -q
 
 GitHub Actions runs these on pushes & PRs (see badge above). Python 3.11 & 3.12 matrix. Separate workflow `npm-publish.yml` handles JS package publishing (manual dispatch or tag `js-v*`).
 
+* Run tests: `pytest -q`
+* End-to-end verify test (`tests/test_verify.py`) now uses an in-process ASGI gateway (`asgi://gateway` sentinel) avoiding network port binding for CI stability.
+
 ### JS SDK Publish
 1. Set repository secret `NPM_TOKEN` (automation token with publish rights).
 2. Manual prerelease:

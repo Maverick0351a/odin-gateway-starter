@@ -46,6 +46,26 @@ def verify_sig_with_jwk(jwk: dict, message: bytes, sig_b64u: str) -> bool:
 
 GATEWAY_URL_DEFAULT = os.getenv("GATEWAY_URL", "http://127.0.0.1:8080")
 
+# --- Test helper: allow in-process ASGI gateway (no network) when gateway_url starts with asgi://gateway ---
+def _async_client_for_gateway(gw: str, timeout: float = 10.0):
+    if gw.startswith("asgi://gateway"):
+        try:
+            from services.gateway.main import app as gapp  # local import to avoid circulars in normal runtime
+        except Exception as e:  # pragma: no cover - only hit if import fails in test mode
+            raise RuntimeError(f"Failed loading in-process gateway app: {e}")
+        # Prefer explicit ASGITransport for httpx>=0.27; fallback to app= for older versions
+        try:  # httpx 0.27+
+            transport = httpx.ASGITransport(app=gapp)
+            return httpx.AsyncClient(transport=transport, base_url="http://gateway.asgi", timeout=timeout)
+        except AttributeError:  # older httpx
+            return httpx.AsyncClient(app=gapp, base_url="http://gateway.asgi", timeout=timeout)  # type: ignore
+    return httpx.AsyncClient(timeout=timeout)
+
+def _gw_request(gw: str, path: str) -> str:
+    if gw.startswith("asgi://gateway"):
+        return path  # relative path for in-process transport
+    return f"{gw.rstrip('/')}{path}"
+
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request, gateway_url: Optional[str] = None, trace_id: Optional[str] = None):
     gw = gateway_url or GATEWAY_URL_DEFAULT
@@ -55,8 +75,8 @@ async def index(request: Request, gateway_url: Optional[str] = None, trace_id: O
 async def view_trace(trace_id: str, request: Request, gateway_url: Optional[str] = None):
     gw = (gateway_url or GATEWAY_URL_DEFAULT).rstrip('/')
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            r = await client.get(f"{gw}/v1/receipts/hops/chain/{trace_id}")
+        async with _async_client_for_gateway(gw, timeout=10) as client:
+            r = await client.get(_gw_request(gw, f"/v1/receipts/hops/chain/{trace_id}"))
         r.raise_for_status()
         data = r.json()
     except Exception as e:
@@ -81,8 +101,8 @@ async def view_trace(trace_id: str, request: Request, gateway_url: Optional[str]
 async def view_export(trace_id: str, request: Request, gateway_url: Optional[str] = None):
     gw = (gateway_url or GATEWAY_URL_DEFAULT).rstrip('/')
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            exp = await client.get(f"{gw}/v1/receipts/export/{trace_id}")
+        async with _async_client_for_gateway(gw, timeout=15) as client:
+            exp = await client.get(_gw_request(gw, f"/v1/receipts/export/{trace_id}"))
         exp.raise_for_status()
     except Exception as e:
         raise HTTPException(502, f"Failed to fetch export: {e}")
@@ -116,8 +136,8 @@ async def view_export(trace_id: str, request: Request, gateway_url: Optional[str
     attempted_formats = []
     if sig and kid:
         try:
-            async with httpx.AsyncClient(timeout=10) as client:
-                jwks = (await client.get(f"{gw}/.well-known/jwks.json")).json()
+            async with _async_client_for_gateway(gw, timeout=10) as client:
+                jwks = (await client.get(_gw_request(gw, "/.well-known/jwks.json"))).json()
             jwk = next((k for k in jwks.get("keys", []) if k.get("kid") == kid), None)
             if jwk:
                 exported_at = bundle.get("exported_at") or bundle.get("ts")
@@ -199,11 +219,11 @@ async def verify_trace(trace_id: str, gateway_url: Optional[str] = None):
     """Fetch export bundle from gateway and verify locally (JSON API)."""
     gw = (gateway_url or GATEWAY_URL_DEFAULT).rstrip('/')
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.get(f"{gw}/v1/receipts/export/{trace_id}")
+        async with _async_client_for_gateway(gw, timeout=10) as client:
+            resp = await client.get(_gw_request(gw, f"/v1/receipts/export/{trace_id}"))
             resp.raise_for_status()
             data = resp.json()
-            jwks = (await client.get(f"{gw}/.well-known/jwks.json")).json()
+            jwks = (await client.get(_gw_request(gw, "/.well-known/jwks.json"))).json()
     except Exception as e:
         raise HTTPException(502, f"Fetch failed: {e}")
     bundle = data.get("bundle") or data
